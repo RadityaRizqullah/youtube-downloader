@@ -9,16 +9,19 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from youtube_downloader.database import get_db, init_db
-from youtube_downloader.downloader import run_download_job
 from youtube_downloader.extractor import check_ffmpeg, extract_video_info, is_valid_youtube_url
 from youtube_downloader.models import DownloadJob, JobState
+from youtube_downloader.queue import QueueManager
 from youtube_downloader.schemas import DownloadJobCreate, DownloadJobRead, HealthResponse, VideoMetadata
 from youtube_downloader.ws import manager
+
+queue_manager = QueueManager()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    await queue_manager.startup()
     yield
 
 
@@ -70,11 +73,53 @@ async def create_job(payload: DownloadJobCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(job)
 
-    loop = asyncio.get_running_loop()
-    # ponytail: trigger download directly in thread; queuing / concurrency control in Issue #4
-    loop.run_in_executor(None, run_download_job, str(job.id), loop)
+    await queue_manager.enqueue(str(job.id))
 
     return job
+
+
+@app.post("/api/jobs/{job_id}/cancel", response_model=DownloadJobRead)
+async def cancel_job(job_id: str, db: Session = Depends(get_db)):
+    job = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    await queue_manager.cancel(job_id)
+    db.refresh(job)
+    return job
+
+
+@app.post("/api/jobs/cancel-all")
+async def cancel_all_jobs():
+    count = await queue_manager.cancel_all()
+    return {"cancelled": count}
+
+
+@app.post("/api/jobs/{job_id}/retry", response_model=DownloadJobRead)
+async def retry_job(job_id: str, db: Session = Depends(get_db)):
+    retried = await queue_manager.retry(job_id)
+    if not retried:
+        job = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        raise HTTPException(status_code=400, detail="Only failed jobs can be retried")
+    return retried
+
+
+@app.delete("/api/jobs/{job_id}")
+async def delete_job(job_id: str, db: Session = Depends(get_db)):
+    job = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.state not in JobState.terminal_states():
+        raise HTTPException(status_code=400, detail="Cannot delete an active job")
+    await queue_manager.delete_job(job_id)
+    return {"deleted": True}
+
+
+@app.post("/api/jobs/clear-completed")
+async def clear_completed_jobs():
+    count = await queue_manager.clear_completed()
+    return {"cleared": count}
 
 
 @app.get("/api/jobs", response_model=List[DownloadJobRead])

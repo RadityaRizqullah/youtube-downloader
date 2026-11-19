@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { isValidYouTubeUrl, formatDuration } from './utils'
-import { AlertCircle, AlertTriangle, CheckCircle2, Download, Eye, Film, Loader2 } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Download, Eye, Film, Loader2 } from 'lucide-react'
+import { DownloadQueue, type DownloadJob } from './DownloadQueue'
 
 interface VideoMetadata {
   url: string
@@ -11,22 +12,6 @@ interface VideoMetadata {
   available_qualities?: string[]
 }
 
-interface DownloadJob {
-  id: string
-  url: string
-  title: string | null
-  uploader: string | null
-  duration_s: number | null
-  thumbnail: string | null
-  format: string
-  quality: string
-  audio_only: boolean
-  state: string
-  progress: number
-  error: string | null
-  output_path: string | null
-}
-
 export default function App() {
   const [url, setUrl] = useState('')
   const [urlError, setUrlError] = useState('')
@@ -34,7 +19,7 @@ export default function App() {
   const [isFetchingMeta, setIsFetchingMeta] = useState(false)
   const [metadata, setMetadata] = useState<VideoMetadata | null>(null)
   const [extractError, setExtractError] = useState('')
-  const [activeJob, setActiveJob] = useState<DownloadJob | null>(null)
+  const [jobs, setJobs] = useState<DownloadJob[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [ffmpegInstalled, setFfmpegInstalled] = useState<boolean | null>(null)
 
@@ -47,7 +32,7 @@ export default function App() {
 
   const wsRef = useRef<WebSocket | null>(null)
 
-  // Check backend health & FFmpeg on startup
+  // Check backend health, FFmpeg & load queue on startup
   useEffect(() => {
     fetch('/api/health')
       .then((res) => res.json())
@@ -56,9 +41,16 @@ export default function App() {
           setFfmpegInstalled(data.ffmpeg)
         }
       })
-      .catch(() => {
-        // Backend offline or during mock tests
+      .catch(() => {})
+
+    fetch('/api/jobs')
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data)) {
+          setJobs(data)
+        }
       })
+      .catch(() => {})
   }, [])
 
   // Setup WebSocket connection for real-time progress updates
@@ -71,16 +63,19 @@ export default function App() {
     ws.onmessage = (event) => {
       try {
         const update = JSON.parse(event.data)
-        setActiveJob((prev) => {
-          if (!prev || prev.id !== update.id) return prev
-          return {
-            ...prev,
-            state: update.state,
-            progress: update.progress,
-            error: update.error,
-            output_path: update.output_path ?? prev.output_path,
-          }
-        })
+        setJobs((prev) =>
+          prev.map((j) =>
+            j.id === update.id
+              ? {
+                  ...j,
+                  state: update.state,
+                  progress: update.progress,
+                  error: update.error,
+                  output_path: update.output_path ?? j.output_path,
+                }
+              : j
+          )
+        )
       } catch (e) {
         console.error('Failed to parse WebSocket message', e)
       }
@@ -167,26 +162,77 @@ export default function App() {
         throw new Error(err.detail || 'Failed to initiate download')
       }
       const job: DownloadJob = await res.json()
-      setActiveJob(job)
+      setJobs((prev) => [job, ...prev.filter((j) => j.id !== job.id)])
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to start download'
-      setActiveJob({
-        id: 'err',
-        url: metadata.url,
-        title: metadata.title,
-        uploader: metadata.uploader,
-        duration_s: metadata.duration_s,
-        thumbnail: metadata.thumbnail,
-        format: chosenFormat,
-        quality: chosenQuality,
-        audio_only: audioOnly,
-        state: 'FAILED',
-        progress: 0,
-        error: message,
-        output_path: null,
-      })
+      setExtractError(message)
     } finally {
       setIsSubmitting(false)
+    }
+  }
+
+  const handleCancel = async (jobId: string) => {
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/cancel`, { method: 'POST' })
+      if (res.ok) {
+        const updated: DownloadJob = await res.json()
+        setJobs((prev) => prev.map((j) => (j.id === jobId ? updated : j)))
+      }
+    } catch (e) {
+      console.error('Failed to cancel job', e)
+    }
+  }
+
+  const handleCancelAll = async () => {
+    try {
+      const res = await fetch('/api/jobs/cancel-all', { method: 'POST' })
+      if (res.ok) {
+        setJobs((prev) =>
+          prev.map((j) =>
+            ['PENDING', 'DOWNLOADING', 'MERGING', 'FETCHING'].includes(j.state)
+              ? { ...j, state: 'CANCELLED', error: 'Cancelled by user' }
+              : j
+          )
+        )
+      }
+    } catch (e) {
+      console.error('Failed to cancel all jobs', e)
+    }
+  }
+
+  const handleRetry = async (jobId: string) => {
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/retry`, { method: 'POST' })
+      if (res.ok) {
+        const retried: DownloadJob = await res.json()
+        setJobs((prev) => prev.map((j) => (j.id === jobId ? retried : j)))
+      }
+    } catch (e) {
+      console.error('Failed to retry job', e)
+    }
+  }
+
+  const handleDelete = async (jobId: string) => {
+    try {
+      const res = await fetch(`/api/jobs/${jobId}`, { method: 'DELETE' })
+      if (res.ok) {
+        setJobs((prev) => prev.filter((j) => j.id !== jobId))
+      }
+    } catch (e) {
+      console.error('Failed to delete job', e)
+    }
+  }
+
+  const handleClearCompleted = async () => {
+    try {
+      const res = await fetch('/api/jobs/clear-completed', { method: 'POST' })
+      if (res.ok) {
+        setJobs((prev) =>
+          prev.filter((j) => !['DONE', 'FAILED', 'CANCELLED'].includes(j.state))
+        )
+      }
+    } catch (e) {
+      console.error('Failed to clear completed jobs', e)
     }
   }
 
@@ -405,7 +451,7 @@ export default function App() {
                 <div className="pt-2 flex justify-end">
                   <button
                     onClick={handleDownload}
-                    disabled={isSubmitting || activeJob?.state === 'DOWNLOADING' || activeJob?.state === 'MERGING'}
+                    disabled={isSubmitting}
                     className="inline-flex items-center gap-2 px-5 py-2.5 bg-rose-600 hover:bg-rose-500 active:bg-rose-700 disabled:opacity-50 rounded-lg font-medium text-sm text-white transition shadow-md cursor-pointer"
                   >
                     {isSubmitting ? (
@@ -421,90 +467,15 @@ export default function App() {
           </div>
         )}
 
-        {/* Active Download Job Status */}
-        {activeJob && (
-          <div className="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-lg space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                  Download Status
-                </span>
-                <p className="text-sm font-medium text-slate-200 truncate max-w-md">
-                  {activeJob.title || activeJob.url}
-                </p>
-              </div>
-              <span
-                className={`text-xs px-2.5 py-1 rounded-full font-semibold uppercase tracking-wider ${
-                  activeJob.state === 'DONE'
-                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                    : activeJob.state === 'FAILED'
-                    ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                    : activeJob.state === 'MERGING'
-                    ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
-                    : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                }`}
-              >
-                {activeJob.state}
-              </span>
-            </div>
-
-            {/* Progress Bar */}
-            <div className="space-y-1.5">
-              <div className="flex justify-between text-xs text-slate-400">
-                <span>Progress</span>
-                <span className="font-mono">{activeJob.progress.toFixed(1)}%</span>
-              </div>
-              <div className="w-full bg-slate-900 rounded-full h-2.5 overflow-hidden">
-                <div
-                  className={`h-full transition-all duration-300 rounded-full ${
-                    activeJob.state === 'DONE'
-                      ? 'bg-emerald-500'
-                      : activeJob.state === 'FAILED'
-                      ? 'bg-rose-500'
-                      : activeJob.state === 'MERGING'
-                      ? 'bg-purple-500'
-                      : 'bg-rose-600'
-                  }`}
-                  style={{ width: `${Math.min(100, Math.max(0, activeJob.progress))}%` }}
-                />
-              </div>
-            </div>
-
-            {/* Merging message */}
-            {activeJob.state === 'MERGING' && (
-              <p className="text-xs text-purple-300 flex items-center gap-1.5">
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                Processing audio/video streams with FFmpeg...
-              </p>
-            )}
-
-            {/* Completion message */}
-            {activeJob.state === 'DONE' && (
-              <div className="flex items-start gap-2 p-3 bg-emerald-950/40 border border-emerald-800/40 rounded-lg text-xs text-emerald-300">
-                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400 mt-0.5" />
-                <div>
-                  <p className="font-medium">Download complete!</p>
-                  {activeJob.output_path && (
-                    <p className="text-slate-400 font-mono mt-0.5 break-all">
-                      Saved: {activeJob.output_path}
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Error message */}
-            {activeJob.state === 'FAILED' && (
-              <div className="flex items-start gap-2 p-3 bg-rose-950/40 border border-rose-800/40 rounded-lg text-xs text-rose-300">
-                <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
-                <div>
-                  <p className="font-medium">Download failed</p>
-                  <p className="text-rose-200/80 mt-0.5 break-all">{activeJob.error}</p>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+        {/* Download Queue View */}
+        <DownloadQueue
+          jobs={jobs}
+          onCancel={handleCancel}
+          onCancelAll={handleCancelAll}
+          onRetry={handleRetry}
+          onDelete={handleDelete}
+          onClearCompleted={handleClearCompleted}
+        />
       </div>
     </div>
   )

@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+import threading
 from typing import Any
 import yt_dlp  # type: ignore[import-untyped]
 
@@ -49,7 +50,15 @@ def build_ydl_opts(job: DownloadJob, outtmpl: str | None = None) -> dict[str, An
     return opts
 
 
-def run_download_job(job_id: str, loop: asyncio.AbstractEventLoop) -> None:
+class DownloadCancelled(Exception):
+    pass
+
+
+def run_download_job(
+    job_id: str,
+    loop: asyncio.AbstractEventLoop,
+    cancel_event: threading.Event | None = None,
+) -> None:
     db = SessionLocal()
     job: DownloadJob | None = None
     try:
@@ -79,6 +88,8 @@ def run_download_job(job_id: str, loop: asyncio.AbstractEventLoop) -> None:
         def progress_hook(d: dict[str, Any]) -> None:
             if not job:
                 return
+            if cancel_event and cancel_event.is_set():
+                raise DownloadCancelled("Job cancelled by user")
             status = d.get("status")
             if status == "downloading":
                 total = float(d.get("total_bytes") or d.get("total_bytes_estimate") or 0.0)
@@ -104,6 +115,8 @@ def run_download_job(job_id: str, loop: asyncio.AbstractEventLoop) -> None:
         def postprocessor_hook(d: dict[str, Any]) -> None:
             if not job:
                 return
+            if cancel_event and cancel_event.is_set():
+                raise DownloadCancelled("Job cancelled by user")
             status = d.get("status")
             if status == "started":
                 job.state = JobState.MERGING.value
@@ -128,6 +141,9 @@ def run_download_job(job_id: str, loop: asyncio.AbstractEventLoop) -> None:
         ydl_opts.setdefault("progress_hooks", []).append(progress_hook)
         ydl_opts.setdefault("postprocessor_hooks", []).append(postprocessor_hook)
 
+        if cancel_event and cancel_event.is_set():
+            raise DownloadCancelled("Job cancelled by user")
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(job.url, download=True)
             if info:
@@ -148,6 +164,9 @@ def run_download_job(job_id: str, loop: asyncio.AbstractEventLoop) -> None:
                     out_file = info["_filename"]
                 job.output_path = out_file
 
+        if cancel_event and cancel_event.is_set():
+            raise DownloadCancelled("Job cancelled by user")
+
         job.state = JobState.DONE.value
         job.progress = 100.0
         db.commit()
@@ -163,6 +182,21 @@ def run_download_job(job_id: str, loop: asyncio.AbstractEventLoop) -> None:
             loop,
         )
 
+    except DownloadCancelled:
+        if job:
+            job.state = JobState.CANCELLED.value
+            job.error = "Cancelled by user"
+            db.commit()
+            asyncio.run_coroutine_threadsafe(
+                manager.broadcast({
+                    "id": job.id,
+                    "state": job.state,
+                    "progress": job.progress,
+                    "error": job.error,
+                    "output_path": None,
+                }),
+                loop,
+            )
     except Exception as exc:
         if job:
             job.state = JobState.FAILED.value

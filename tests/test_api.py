@@ -48,7 +48,7 @@ async def test_info_returns_metadata_for_valid_url():
 
 @pytest.mark.asyncio
 async def test_create_download_job():
-    with patch("youtube_downloader.main.run_download_job"):
+    with patch("youtube_downloader.main.queue_manager.enqueue"):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             payload = {
                 "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
@@ -137,5 +137,80 @@ async def test_serves_spa_index():
         response = await client.get("/")
         assert response.status_code == 200
         assert "html" in response.headers.get("content-type", "")
+
+
+@pytest.mark.asyncio
+async def test_api_cancel_and_cancel_all():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Create a job
+        with patch("youtube_downloader.main.queue_manager.enqueue"):
+            res = await client.post("/api/jobs", json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"})
+            assert res.status_code == 201
+            job_id = res.json()["id"]
+
+            # Cancel single job
+            cancel_res = await client.post(f"/api/jobs/{job_id}/cancel")
+            assert cancel_res.status_code == 200
+            assert cancel_res.json()["state"] == "CANCELLED"
+
+            # Create another job and cancel all
+            res2 = await client.post("/api/jobs", json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"})
+            assert res2.status_code == 201
+            j2_id = res2.json()["id"]
+
+            cancel_all_res = await client.post("/api/jobs/cancel-all")
+            assert cancel_all_res.status_code == 200
+            assert cancel_all_res.json()["cancelled"] >= 1
+
+            check = await client.get(f"/api/jobs/{j2_id}")
+            assert check.json()["state"] == "CANCELLED"
+
+
+@pytest.mark.asyncio
+async def test_api_retry_and_clear():
+    from youtube_downloader.database import SessionLocal
+    from youtube_downloader.models import DownloadJob, JobState
+    import uuid
+
+    job_id = f"api-test-{uuid.uuid4()}"
+    # Seed a failed job
+    db = SessionLocal()
+    failed_job = DownloadJob(
+        id=job_id,
+        url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        state=JobState.FAILED.value,
+        error="Sample error",
+        progress=10.0,
+    )
+    db.add(failed_job)
+    db.commit()
+    db.close()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        with patch("youtube_downloader.main.queue_manager.enqueue"):
+            # Retry failed job
+            retry_res = await client.post(f"/api/jobs/{job_id}/retry")
+            assert retry_res.status_code == 200
+            retried = retry_res.json()
+            assert retried["state"] == "PENDING"
+            assert retried["error"] is None
+            assert retried["progress"] == 0.0
+
+        # Mark it cancelled so we can test delete
+        db = SessionLocal()
+        j = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+        j.state = JobState.CANCELLED.value
+        db.commit()
+        db.close()
+
+        # Delete single terminal job
+        del_res = await client.delete(f"/api/jobs/{job_id}")
+        assert del_res.status_code == 200
+
+        # Clear completed
+        clear_res = await client.post("/api/jobs/clear-completed")
+        assert clear_res.status_code == 200
+        assert "cleared" in clear_res.json()
+
 
 

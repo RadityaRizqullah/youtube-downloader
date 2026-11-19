@@ -17,6 +17,14 @@ class JobState(str, Enum):
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
 
+    @classmethod
+    def terminal_states(cls) -> set[str]:
+        return {cls.DONE.value, cls.FAILED.value, cls.CANCELLED.value}
+
+    @classmethod
+    def active_states(cls) -> set[str]:
+        return {cls.PENDING.value, cls.DOWNLOADING.value, cls.MERGING.value}
+
 
 class DownloadJob(Base):
     __tablename__ = "download_jobs"

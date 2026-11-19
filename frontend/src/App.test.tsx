@@ -361,4 +361,111 @@ describe('App Walking Skeleton', () => {
       expect(screen.getByText('MERGING')).toBeInTheDocument()
     })
   })
+
+  it('loads existing queue on startup and allows cancel, retry, clear', async () => {
+    const existingJobs = [
+      {
+        id: 'job-active-1',
+        url: 'https://youtube.com/watch?v=1',
+        title: 'Initial Active Job',
+        uploader: 'Channel 1',
+        duration_s: 100,
+        thumbnail: null,
+        format: 'mp4',
+        quality: '1080p',
+        audio_only: false,
+        state: 'DOWNLOADING',
+        progress: 30.0,
+        error: null,
+        output_path: null,
+      },
+      {
+        id: 'job-failed-1',
+        url: 'https://youtube.com/watch?v=2',
+        title: 'Initial Failed Job',
+        uploader: 'Channel 2',
+        duration_s: 200,
+        thumbnail: null,
+        format: 'mp3',
+        quality: '320k',
+        audio_only: true,
+        state: 'FAILED',
+        progress: 0.0,
+        error: 'Network timeout',
+        output_path: null,
+      },
+    ]
+
+    let cancelCalledWith = ''
+    let cancelAllCalled = false
+    let retryCalledWith = ''
+    let clearCompletedCalled = false
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, opts) => {
+      const urlStr = url.toString()
+      if (urlStr.includes('/api/jobs') && (!opts || opts.method === undefined || opts.method === 'GET')) {
+        return { ok: true, json: async () => existingJobs } as Response
+      }
+      if (urlStr.includes('/api/jobs/job-active-1/cancel') && opts?.method === 'POST') {
+        cancelCalledWith = 'job-active-1'
+        return {
+          ok: true,
+          json: async () => ({ ...existingJobs[0], state: 'CANCELLED', error: 'Cancelled by user' }),
+        } as Response
+      }
+      if (urlStr.includes('/api/jobs/cancel-all') && opts?.method === 'POST') {
+        cancelAllCalled = true
+        return { ok: true, json: async () => ({ cancelled: 1 }) } as Response
+      }
+      if (urlStr.includes('/retry') && opts?.method === 'POST') {
+        const id = urlStr.split('/jobs/')[1].split('/retry')[0]
+        retryCalledWith = id
+        return {
+          ok: true,
+          json: async () => ({ ...existingJobs[1], state: 'PENDING', error: null, progress: 0 }),
+        } as Response
+      }
+      if (urlStr.includes('/api/jobs/clear-completed') && opts?.method === 'POST') {
+        clearCompletedCalled = true
+        return { ok: true, json: async () => ({ cleared: 1 }) } as Response
+      }
+      return { ok: true, json: async () => ({}) } as Response
+    })
+
+    render(<App />)
+
+    // Verify initial queue loaded
+    await waitFor(() => {
+      expect(screen.getByText('Initial Active Job')).toBeInTheDocument()
+      expect(screen.getByText('Initial Failed Job')).toBeInTheDocument()
+    })
+
+    // Test Cancel single job
+    const cancelBtn = screen.getByRole('button', { name: /^cancel$/i })
+    fireEvent.click(cancelBtn)
+    await waitFor(() => {
+      expect(cancelCalledWith).toBe('job-active-1')
+    })
+
+    // Test Retry failed job
+    const retryBtn = screen.getByRole('button', { name: /^retry$/i })
+    fireEvent.click(retryBtn)
+    await waitFor(() => {
+      expect(retryCalledWith).toBe('job-failed-1')
+    })
+
+    // Test Cancel All
+    const cancelAllBtn = screen.getByRole('button', { name: /cancel all/i })
+    fireEvent.click(cancelAllBtn)
+    await waitFor(() => {
+      expect(cancelAllCalled).toBe(true)
+    })
+
+    // Test Clear Completed
+    const clearCompletedBtn = screen.getByRole('button', { name: /clear completed/i })
+    fireEvent.click(clearCompletedBtn)
+    await waitFor(() => {
+      expect(clearCompletedCalled).toBe(true)
+    })
+  })
 })
