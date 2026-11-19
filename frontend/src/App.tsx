@@ -351,18 +351,17 @@ export default function App() {
                           className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500/50"
                         >
                           <option value="best">Best Quality</option>
-                          <option value="1080p">
-                            1080p {metadata.available_qualities && !metadata.available_qualities.includes('1080p') ? '(unavailable)' : ''}
-                          </option>
-                          <option value="720p">
-                            720p {metadata.available_qualities && !metadata.available_qualities.includes('720p') ? '(unavailable)' : ''}
-                          </option>
-                          <option value="480p">
-                            480p {metadata.available_qualities && !metadata.available_qualities.includes('480p') ? '(unavailable)' : ''}
-                          </option>
-                          <option value="360p">
-                            360p {metadata.available_qualities && !metadata.available_qualities.includes('360p') ? '(unavailable)' : ''}
-                          </option>
+                          {(['1080p', '720p', '480p', '360p'] as const).map((q) => {
+                            const isAvailable =
+                              !metadata.available_qualities ||
+                              metadata.available_qualities.length === 0 ||
+                              metadata.available_qualities.includes(q)
+                            return (
+                              <option key={q} value={q} disabled={!isAvailable}>
+                                {q} {!isAvailable ? '(unavailable)' : ''}
+                              </option>
+                            )
+                          })}
                         </select>
                       </div>
                     </div>

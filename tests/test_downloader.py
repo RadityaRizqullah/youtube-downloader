@@ -22,7 +22,7 @@ def test_build_ydl_opts_video_specific_resolution_mkv():
         audio_only=False,
     )
     opts = build_ydl_opts(job)
-    assert opts["format"] == "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
+    assert opts["format"] == "bestvideo[height<=1080]+bestaudio/best[height<=1080]"
     assert opts["merge_output_format"] == "mkv"
 
 

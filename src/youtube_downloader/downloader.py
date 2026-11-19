@@ -44,7 +44,7 @@ def build_ydl_opts(job: DownloadJob, outtmpl: str | None = None) -> dict[str, An
             opts["format"] = "bestvideo+bestaudio/best"
         else:
             height = job.quality.rstrip("p")
-            opts["format"] = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+            opts["format"] = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]"
 
     return opts
 
@@ -119,7 +119,8 @@ def run_download_job(job_id: str, loop: asyncio.AbstractEventLoop) -> None:
                     loop,
                 )
             elif status == "finished":
-                filename = d.get("filepath") or d.get("filename")
+                info_dict = d.get("info_dict") or {}
+                filename = info_dict.get("filepath") or d.get("filepath") or d.get("filename")
                 if filename:
                     final_path.append(filename)
 
