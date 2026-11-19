@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
-from typing import List
+from typing import List, Optional, Union
 from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,7 +9,13 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from youtube_downloader.database import get_db, init_db
-from youtube_downloader.extractor import check_ffmpeg, extract_video_info, is_valid_youtube_url
+from youtube_downloader.extractor import (
+    check_ffmpeg,
+    extract_playlist_info,
+    extract_video_info,
+    is_playlist_url,
+    is_valid_youtube_url,
+)
 from youtube_downloader.models import DownloadJob, JobState
 from youtube_downloader.queue import QueueManager
 from youtube_downloader.schemas import (
@@ -19,7 +25,12 @@ from youtube_downloader.schemas import (
     DownloadJobCreate,
     DownloadJobRead,
     HealthResponse,
+    PlaylistDownloadError,
+    PlaylistDownloadRequest,
+    PlaylistDownloadResponse,
+    PlaylistMetadata,
     VideoMetadata,
+    VideoSelection,
 )
 from youtube_downloader.ws import manager
 
@@ -49,15 +60,24 @@ async def get_health():
     return HealthResponse(ffmpeg=check_ffmpeg())
 
 
-@app.get("/api/info", response_model=VideoMetadata)
-async def get_info(url: str = Query(..., description="YouTube video URL")):
+@app.get("/api/info", response_model=Union[PlaylistMetadata, VideoMetadata])
+async def get_info(
+    url: str = Query(..., description="YouTube video or playlist URL"),
+    playlist: Optional[bool] = Query(None, description="Force playlist extraction if URL contains a playlist"),
+):
     if not is_valid_youtube_url(url):
         raise HTTPException(status_code=400, detail="Invalid YouTube URL format")
     try:
-        data = extract_video_info(url)
-        return VideoMetadata(**data)
+        is_pl = is_playlist_url(url) if playlist is None else (playlist or is_playlist_url(url))
+        if is_pl:
+            data = await asyncio.to_thread(extract_playlist_info, url)
+            return PlaylistMetadata(**data)
+        else:
+            data = await asyncio.to_thread(extract_video_info, url)
+            return VideoMetadata(**data)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to extract video info: {exc}")
+        raise HTTPException(status_code=400, detail=f"Failed to extract info: {exc}")
+
 
 
 @app.post("/api/jobs", response_model=DownloadJobRead, status_code=status.HTTP_201_CREATED)
@@ -126,6 +146,53 @@ async def create_batch_jobs(payload: BatchDownloadRequest, db: Session = Depends
         total_queued=len(queued_jobs),
         total_failed=len(failed),
     )
+
+
+# ponytail: sequential enqueue loop; upgrade to bulk insert/enqueue if playlist selection > 500
+@app.post("/api/jobs/playlist", response_model=PlaylistDownloadResponse, status_code=status.HTTP_201_CREATED)
+async def create_playlist_jobs(payload: PlaylistDownloadRequest, db: Session = Depends(get_db)):
+    queued_jobs: list[DownloadJob] = []
+    failed: list[PlaylistDownloadError] = []
+    total_submitted = 0
+
+    for video in payload.videos:
+        url = video.url.strip()
+        if not url:
+            continue
+        total_submitted += 1
+        if not is_valid_youtube_url(url):
+            failed.append(PlaylistDownloadError(url=url, error="Invalid YouTube URL format"))
+            continue
+
+        job = DownloadJob(
+            url=url,
+            title=video.title,
+            uploader=video.uploader,
+            duration_s=video.duration_s,
+            thumbnail=video.thumbnail,
+            format=payload.format,
+            quality=payload.quality,
+            audio_only=payload.audio_only,
+            state=JobState.PENDING.value,
+            progress=0.0,
+        )
+        db.add(job)
+        queued_jobs.append(job)
+
+    db.commit()
+
+    for job in queued_jobs:
+        db.refresh(job)
+        await queue_manager.enqueue(str(job.id))
+
+    return PlaylistDownloadResponse(
+        queued=[DownloadJobRead.model_validate(j) for j in queued_jobs],
+        failed=failed,
+        total_submitted=total_submitted,
+        total_queued=len(queued_jobs),
+        total_failed=len(failed),
+    )
+
 
 
 

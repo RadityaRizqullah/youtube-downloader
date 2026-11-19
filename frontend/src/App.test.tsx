@@ -565,5 +565,204 @@ describe('App Walking Skeleton', () => {
       expect(screen.getByText(/queued 1 job/i)).toBeInTheDocument()
     })
   })
+
+  it('switches to Playlist tab, previews playlist, renders header and video checklist', async () => {
+    const mockPlaylist = {
+      url: 'https://www.youtube.com/playlist?list=PLrAXtmErZgOdP_8GztsuKi9nrraNbKKp4',
+      title: 'Lex Fridman Podcast',
+      uploader: 'Lex Fridman',
+      video_count: 2,
+      videos: [
+        {
+          url: 'https://www.youtube.com/watch?v=vid1',
+          title: 'Episode 1 - Sam Altman',
+          uploader: 'Lex Fridman',
+          duration_s: 3600,
+          thumbnail: 'https://example.com/thumb1.jpg',
+        },
+        {
+          url: 'https://www.youtube.com/watch?v=vid2',
+          title: 'Episode 2 - Elon Musk',
+          uploader: 'Lex Fridman',
+          duration_s: 1800,
+          thumbnail: 'https://example.com/thumb2.jpg',
+        },
+      ],
+    }
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const urlStr = url.toString()
+      if (urlStr.includes('/api/info')) {
+        return { ok: true, json: async () => mockPlaylist } as Response
+      }
+      return { ok: true, json: async () => ({}) } as Response
+    })
+
+    render(<App />)
+
+    // Switch to Playlist tab
+    const playlistTabBtn = screen.getByRole('button', { name: /^playlist download$/i })
+    fireEvent.click(playlistTabBtn)
+
+    const input = screen.getByPlaceholderText(/paste youtube playlist url/i)
+    fireEvent.change(input, {
+      target: { value: 'https://www.youtube.com/playlist?list=PLrAXtmErZgOdP_8GztsuKi9nrraNbKKp4' },
+    })
+
+    const previewBtn = screen.getByRole('button', { name: /preview playlist/i })
+    fireEvent.click(previewBtn)
+
+    await waitFor(() => {
+      expect(screen.getByText('Lex Fridman Podcast')).toBeInTheDocument()
+      expect(screen.getByText('2 videos')).toBeInTheDocument()
+    })
+
+    expect(screen.getByText('Episode 1 - Sam Altman')).toBeInTheDocument()
+    expect(screen.getByText('Episode 2 - Elon Musk')).toBeInTheDocument()
+    expect(screen.getByText('60:00')).toBeInTheDocument()
+    expect(screen.getByText('30:00')).toBeInTheDocument()
+  })
+
+  it('handles Select All and Deselect All toggles and submits selection to /api/jobs/playlist', async () => {
+    let playlistPayload: any = null
+    const mockPlaylist = {
+      url: 'https://www.youtube.com/playlist?list=PL12345',
+      title: 'Tech Talks',
+      uploader: 'Tech Channel',
+      video_count: 2,
+      videos: [
+        {
+          url: 'https://www.youtube.com/watch?v=talk1',
+          title: 'Talk 1',
+          uploader: 'Tech Channel',
+          duration_s: 120,
+          thumbnail: 'https://example.com/t1.jpg',
+        },
+        {
+          url: 'https://www.youtube.com/watch?v=talk2',
+          title: 'Talk 2',
+          uploader: 'Tech Channel',
+          duration_s: 240,
+          thumbnail: 'https://example.com/t2.jpg',
+        },
+      ],
+    }
+
+    const mockResponse = {
+      queued: [
+        {
+          id: 'job-pl-1',
+          url: 'https://www.youtube.com/watch?v=talk1',
+          title: 'Talk 1',
+          uploader: 'Tech Channel',
+          duration_s: 120,
+          thumbnail: 'https://example.com/t1.jpg',
+          format: 'mp4',
+          quality: '720p',
+          audio_only: false,
+          state: 'PENDING',
+          progress: 0.0,
+          error: null,
+          output_path: null,
+        },
+      ],
+      failed: [],
+      total_submitted: 1,
+      total_queued: 1,
+      total_failed: 0,
+    }
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, opts) => {
+      const urlStr = url.toString()
+      if (urlStr.includes('/api/info')) {
+        return { ok: true, json: async () => mockPlaylist } as Response
+      }
+      if (urlStr.includes('/api/jobs/playlist') && opts?.method === 'POST') {
+        playlistPayload = JSON.parse(opts.body as string)
+        return { ok: true, json: async () => mockResponse } as Response
+      }
+      return { ok: true, json: async () => ({}) } as Response
+    })
+
+    render(<App />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^playlist download$/i }))
+    const input = screen.getByPlaceholderText(/paste youtube playlist url/i)
+    fireEvent.change(input, { target: { value: 'https://www.youtube.com/playlist?list=PL12345' } })
+    fireEvent.click(screen.getByRole('button', { name: /preview playlist/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Tech Talks')).toBeInTheDocument()
+    })
+
+    // Deselect all
+    const deselectBtn = screen.getByRole('button', { name: /deselect all/i })
+    fireEvent.click(deselectBtn)
+
+    // Checkbox for talk 1 only
+    const checkboxes = screen.getAllByRole('checkbox')
+    expect(checkboxes).toHaveLength(2)
+    fireEvent.click(checkboxes[0]) // Select Talk 1
+
+    // Select 720p quality
+    const qualitySelect = screen.getByLabelText(/quality/i)
+    fireEvent.change(qualitySelect, { target: { value: '720p' } })
+
+    const downloadBtn = screen.getByRole('button', { name: /download selected/i })
+    fireEvent.click(downloadBtn)
+
+    await waitFor(() => {
+      expect(playlistPayload).not.toBeNull()
+    })
+
+    expect(playlistPayload.videos).toHaveLength(1)
+    expect(playlistPayload.videos[0].url).toBe('https://www.youtube.com/watch?v=talk1')
+    expect(playlistPayload.videos[0].title).toBe('Talk 1')
+    expect(playlistPayload.quality).toBe('720p')
+    expect(playlistPayload.format).toBe('mp4')
+  })
+
+  it('auto-switches to Playlist tab when a playlist URL is pasted in single video input', async () => {
+    const mockPlaylist = {
+      url: 'https://www.youtube.com/playlist?list=PL12345',
+      title: 'Auto Switch Playlist',
+      uploader: 'Channel',
+      video_count: 1,
+      videos: [
+        {
+          url: 'https://www.youtube.com/watch?v=vid1',
+          title: 'Auto Vid 1',
+          uploader: 'Channel',
+          duration_s: 100,
+          thumbnail: 'https://example.com/thumb.jpg',
+        },
+      ],
+    }
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const urlStr = url.toString()
+      if (urlStr.includes('/api/info')) {
+        return { ok: true, json: async () => mockPlaylist } as Response
+      }
+      return { ok: true, json: async () => ({}) } as Response
+    })
+
+    render(<App />)
+
+    const singleInput = screen.getByPlaceholderText(/paste youtube video url/i)
+    fireEvent.change(singleInput, {
+      target: { value: 'https://www.youtube.com/playlist?list=PL12345' },
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText('Auto Switch Playlist')).toBeInTheDocument()
+    })
+
+    // Confirm Playlist tab is now active
+    const playlistTabBtn = screen.getByRole('button', { name: /^playlist download$/i })
+    expect(playlistTabBtn.className).toContain('text-rose-400')
+  })
 })
+
+
 

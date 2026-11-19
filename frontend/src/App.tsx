@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { isValidYouTubeUrl, formatDuration, validateBatchUrls } from './utils'
+import { isValidYouTubeUrl, isPlaylistUrl, formatDuration, validateBatchUrls } from './utils'
 import { AlertCircle, AlertTriangle, Download, Eye, Film, Loader2 } from 'lucide-react'
 import { DownloadQueue, type DownloadJob } from './DownloadQueue'
 
@@ -10,6 +10,14 @@ interface VideoMetadata {
   duration_s: number
   thumbnail: string
   available_qualities?: string[]
+}
+
+interface PlaylistMetadata {
+  url: string
+  title: string
+  uploader: string
+  video_count: number
+  videos: VideoMetadata[]
 }
 
 export default function App() {
@@ -30,8 +38,10 @@ export default function App() {
   const [audioFormat, setAudioFormat] = useState('mp3')
   const [audioBitrate, setAudioBitrate] = useState('best')
 
+  // Navigation mode
+  const [activeTab, setActiveTab] = useState<'single' | 'batch' | 'playlist'>('single')
+
   // Batch Download state
-  const [activeTab, setActiveTab] = useState<'single' | 'batch'>('single')
   const [batchInput, setBatchInput] = useState('')
   const [isBatchSubmitting, setIsBatchSubmitting] = useState(false)
   const [batchSummary, setBatchSummary] = useState('')
@@ -40,6 +50,22 @@ export default function App() {
   const [batchVideoQuality, setBatchVideoQuality] = useState('best')
   const [batchAudioFormat, setBatchAudioFormat] = useState('mp3')
   const [batchAudioBitrate, setBatchAudioBitrate] = useState('best')
+
+  // Playlist Download state
+  const [playlistUrl, setPlaylistUrl] = useState('')
+  const [playlistUrlError, setPlaylistUrlError] = useState('')
+  const [isPlaylistTouched, setIsPlaylistTouched] = useState(false)
+  const [isFetchingPlaylist, setIsFetchingPlaylist] = useState(false)
+  const [playlistMetadata, setPlaylistMetadata] = useState<PlaylistMetadata | null>(null)
+  const [playlistExtractError, setPlaylistExtractError] = useState('')
+  const [selectedVideoIndices, setSelectedVideoIndices] = useState<Set<number>>(new Set())
+  const [isPlaylistSubmitting, setIsPlaylistSubmitting] = useState(false)
+  const [playlistSummary, setPlaylistSummary] = useState('')
+  const [playlistAudioOnly, setPlaylistAudioOnly] = useState(false)
+  const [playlistVideoFormat, setPlaylistVideoFormat] = useState('mp4')
+  const [playlistVideoQuality, setPlaylistVideoQuality] = useState('best')
+  const [playlistAudioFormat, setPlaylistAudioFormat] = useState('mp3')
+  const [playlistAudioBitrate, setPlaylistAudioBitrate] = useState('best')
 
   const batchValidation = validateBatchUrls(batchInput)
 
@@ -101,6 +127,12 @@ export default function App() {
 
   const handleUrlChange = (value: string) => {
     setUrl(value)
+    if (isPlaylistUrl(value)) {
+      setActiveTab('playlist')
+      setPlaylistUrl(value)
+      fetchPlaylistMetadata(value)
+      return
+    }
     if (isTouched) {
       validateUrl(value)
     }
@@ -313,6 +345,134 @@ export default function App() {
     }
   }
 
+  const handlePlaylistUrlChange = (value: string) => {
+    setPlaylistUrl(value)
+    if (isPlaylistUrl(value)) {
+      fetchPlaylistMetadata(value)
+      return
+    }
+    if (isPlaylistTouched) {
+      validatePlaylistUrl(value)
+    }
+  }
+
+  const validatePlaylistUrl = (value: string): boolean => {
+    const trimmed = value.trim()
+    if (!trimmed) {
+      setPlaylistUrlError('Playlist URL is required')
+      return false
+    }
+    if (!isValidYouTubeUrl(trimmed)) {
+      setPlaylistUrlError('Please enter a valid YouTube playlist URL')
+      return false
+    }
+    setPlaylistUrlError('')
+    return true
+  }
+
+  const handlePlaylistBlur = () => {
+    setIsPlaylistTouched(true)
+    validatePlaylistUrl(playlistUrl)
+  }
+
+  const fetchPlaylistMetadata = async (targetUrl = playlistUrl) => {
+    setIsPlaylistTouched(true)
+    if (!validatePlaylistUrl(targetUrl)) return
+
+    setIsFetchingPlaylist(true)
+    setPlaylistExtractError('')
+    setPlaylistMetadata(null)
+
+    try {
+      const res = await fetch(`/api/info?url=${encodeURIComponent(targetUrl.trim())}&playlist=true`)
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to fetch playlist preview')
+      }
+      const data: PlaylistMetadata = await res.json()
+      setPlaylistMetadata(data)
+      setSelectedVideoIndices(new Set((data.videos || []).map((_, i) => i)))
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Error fetching playlist metadata'
+      setPlaylistExtractError(message)
+    } finally {
+      setIsFetchingPlaylist(false)
+    }
+  }
+
+  const toggleVideoSelection = (index: number) => {
+    setSelectedVideoIndices((prev) => {
+      const next = new Set(prev)
+      if (next.has(index)) {
+        next.delete(index)
+      } else {
+        next.add(index)
+      }
+      return next
+    })
+  }
+
+  // ponytail: client-side selection dispatch; upgrade to range selection (e.g. 1-10) if requested
+  const handleDownloadPlaylist = async () => {
+    if (!playlistMetadata || selectedVideoIndices.size === 0) return
+    setIsPlaylistSubmitting(true)
+    setPlaylistSummary('')
+
+    const chosenFormat = playlistAudioOnly ? playlistAudioFormat : playlistVideoFormat
+    const chosenQuality = playlistAudioOnly ? playlistAudioBitrate : playlistVideoQuality
+
+    const selectedVideos = playlistMetadata.videos
+      .filter((_, idx) => selectedVideoIndices.has(idx))
+      .map((v) => ({
+        url: v.url,
+        title: v.title,
+        uploader: v.uploader,
+        duration_s: v.duration_s,
+        thumbnail: v.thumbnail,
+      }))
+
+    try {
+      const res = await fetch('/api/jobs/playlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          videos: selectedVideos,
+          format: chosenFormat,
+          quality: chosenQuality,
+          audio_only: playlistAudioOnly,
+        }),
+      })
+
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to queue playlist download')
+      }
+
+      const data = await res.json()
+      if (Array.isArray(data.queued)) {
+        setJobs((prev) => [
+          ...data.queued,
+          ...prev.filter((j) => !data.queued.some((q: DownloadJob) => q.id === j.id)),
+        ])
+      }
+
+      const queuedCount = data.total_queued ?? data.queued.length
+      setPlaylistSummary(
+        `Queued ${queuedCount} job${queuedCount === 1 ? '' : 's'}. Monitored in queue below.`
+      )
+
+      const el = document.getElementById('download-queue')
+      if (el && typeof el.scrollIntoView === 'function') {
+        el.scrollIntoView({ behavior: 'smooth' })
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Error queueing playlist'
+      setPlaylistSummary(`Error: ${message}`)
+    } finally {
+      setIsPlaylistSubmitting(false)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col items-center px-4 py-8">
       <div className="w-full max-w-2xl space-y-6">
@@ -321,7 +481,13 @@ export default function App() {
           <Film className="w-8 h-8 text-rose-500" />
           <div>
             <h1 className="text-2xl font-bold tracking-tight">YouTube Downloader</h1>
-            <p className="text-xs text-slate-400">Single Video Preview &amp; Download</p>
+            <p className="text-xs text-slate-400">
+              {activeTab === 'single'
+                ? 'Single Video Preview & Download'
+                : activeTab === 'batch'
+                ? 'Batch URL Input & Queueing'
+                : 'Playlist Preview & Selective Download'}
+            </p>
           </div>
         </header>
 
@@ -364,6 +530,17 @@ export default function App() {
             }`}
           >
             Batch Download
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('playlist')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition cursor-pointer ${
+              activeTab === 'playlist'
+                ? 'border-rose-500 text-rose-400'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Playlist Download
           </button>
         </div>
 
@@ -740,6 +917,295 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* Playlist Download Mode */}
+        {activeTab === 'playlist' && (
+          <div className="space-y-6 animate-in fade-in duration-200">
+            {/* Playlist URL Input Form */}
+            <div className="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-lg space-y-3">
+              <label htmlFor="playlist-url" className="block text-sm font-medium text-slate-300">
+                YouTube Playlist URL
+              </label>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <input
+                    id="playlist-url"
+                    type="text"
+                    placeholder="Paste YouTube playlist URL here..."
+                    value={playlistUrl}
+                    onChange={(e) => handlePlaylistUrlChange(e.target.value)}
+                    onBlur={handlePlaylistBlur}
+                    className={`w-full bg-slate-900 border rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 transition ${
+                      playlistUrlError
+                        ? 'border-rose-500 focus:ring-rose-500/50'
+                        : 'border-slate-700 focus:ring-rose-500/50'
+                    }`}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => fetchPlaylistMetadata()}
+                  disabled={isFetchingPlaylist || !playlistUrl.trim()}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 bg-slate-700 hover:bg-slate-600 active:bg-slate-650 disabled:opacity-50 disabled:pointer-events-none rounded-lg text-sm font-medium transition cursor-pointer"
+                >
+                  {isFetchingPlaylist ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Eye className="w-4 h-4" />
+                  )}
+                  Preview Playlist
+                </button>
+              </div>
+
+              {playlistUrlError && (
+                <p className="text-xs text-rose-400 flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  {playlistUrlError}
+                </p>
+              )}
+
+              {playlistExtractError && (
+                <div className="p-3 bg-rose-950/40 border border-rose-800/50 rounded-lg text-xs text-rose-300">
+                  {playlistExtractError}
+                </div>
+              )}
+            </div>
+
+            {/* Playlist Preview & Selection Card */}
+            {playlistMetadata && (
+              <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden shadow-lg p-5 space-y-4">
+                {/* Playlist Header */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-700/60 gap-2">
+                  <div>
+                    <h2 className="text-lg font-semibold text-slate-100 leading-snug">
+                      {playlistMetadata.title}
+                    </h2>
+                    <p className="text-xs text-slate-400 mt-0.5">{playlistMetadata.uploader}</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs bg-slate-900 border border-slate-700 text-slate-300 px-2.5 py-1 rounded-full font-mono">
+                      {playlistMetadata.video_count} videos
+                    </span>
+                  </div>
+                </div>
+
+                {/* Selection Controls */}
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-xs text-slate-400">
+                    {selectedVideoIndices.size} of {playlistMetadata.videos.length} selected
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedVideoIndices(new Set(playlistMetadata.videos.map((_, i) => i)))
+                      }
+                      className="text-xs text-rose-400 hover:text-rose-300 font-medium px-2 py-1 rounded hover:bg-slate-700/50 transition cursor-pointer"
+                    >
+                      Select All
+                    </button>
+                    <span className="text-slate-600">|</span>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedVideoIndices(new Set())}
+                      className="text-xs text-slate-400 hover:text-slate-200 font-medium px-2 py-1 rounded hover:bg-slate-700/50 transition cursor-pointer"
+                    >
+                      Deselect All
+                    </button>
+                  </div>
+                </div>
+
+                {/* Interactive Checklist (scrollable container for performance on large playlists) */}
+                <div className="max-h-96 overflow-y-auto space-y-2 pr-1 border border-slate-700/50 rounded-lg p-2 bg-slate-950/40">
+                  {playlistMetadata.videos.map((video, index) => {
+                    const isChecked = selectedVideoIndices.has(index)
+                    return (
+                      <label
+                        key={video.url + index}
+                        className={`flex items-center gap-3 p-2 rounded-lg cursor-pointer transition select-none ${
+                          isChecked
+                            ? 'bg-slate-800/80 border border-slate-700/80'
+                            : 'hover:bg-slate-900/60 border border-transparent'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleVideoSelection(index)}
+                          className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 bg-slate-900 border-slate-700 cursor-pointer"
+                        />
+                        <span className="text-xs font-mono text-slate-500 w-6 text-right shrink-0">
+                          #{index + 1}
+                        </span>
+                        <div className="w-16 h-10 shrink-0 bg-slate-900 rounded overflow-hidden flex items-center justify-center">
+                          {video.thumbnail ? (
+                            <img
+                              src={video.thumbnail}
+                              alt=""
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <Film className="w-5 h-5 text-slate-700" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium text-slate-200 truncate" title={video.title}>
+                            {video.title}
+                          </p>
+                          <p className="text-[11px] text-slate-400">{video.uploader}</p>
+                        </div>
+                        <span className="text-xs font-mono text-slate-400 shrink-0">
+                          {formatDuration(video.duration_s)}
+                        </span>
+                      </label>
+                    )
+                  })}
+                </div>
+
+                {/* Unified Format Selection for Playlist */}
+                <div className="space-y-2 pt-2 border-t border-slate-700/60">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-400 font-medium">Download Type:</span>
+                    <div className="flex rounded-lg bg-slate-900/60 p-0.5 border border-slate-700/60">
+                      <button
+                        type="button"
+                        onClick={() => setPlaylistAudioOnly(false)}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition cursor-pointer ${
+                          !playlistAudioOnly
+                            ? 'bg-rose-600 text-white shadow'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Video
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPlaylistAudioOnly(true)}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition cursor-pointer ${
+                          playlistAudioOnly
+                            ? 'bg-rose-600 text-white shadow'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Audio Only
+                      </button>
+                    </div>
+                  </div>
+
+                  {!playlistAudioOnly ? (
+                    <div className="grid grid-cols-2 gap-3 pt-1">
+                      <div>
+                        <label
+                          htmlFor="playlist-video-format"
+                          className="block text-xs font-medium text-slate-300 mb-1"
+                        >
+                          Format
+                        </label>
+                        <select
+                          id="playlist-video-format"
+                          value={playlistVideoFormat}
+                          onChange={(e) => setPlaylistVideoFormat(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+                        >
+                          <option value="mp4">MP4</option>
+                          <option value="webm">WebM</option>
+                          <option value="mkv">MKV</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="playlist-video-quality"
+                          className="block text-xs font-medium text-slate-300 mb-1"
+                        >
+                          Quality
+                        </label>
+                        <select
+                          id="playlist-video-quality"
+                          value={playlistVideoQuality}
+                          onChange={(e) => setPlaylistVideoQuality(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+                        >
+                          <option value="best">Best Quality</option>
+                          <option value="1080p">1080p</option>
+                          <option value="720p">720p</option>
+                          <option value="480p">480p</option>
+                          <option value="360p">360p</option>
+                        </select>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3 pt-1">
+                      <div>
+                        <label
+                          htmlFor="playlist-audio-format"
+                          className="block text-xs font-medium text-slate-300 mb-1"
+                        >
+                          Format
+                        </label>
+                        <select
+                          id="playlist-audio-format"
+                          value={playlistAudioFormat}
+                          onChange={(e) => setPlaylistAudioFormat(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+                        >
+                          <option value="mp3">MP3</option>
+                          <option value="m4a">M4A</option>
+                          <option value="opus">Opus</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="playlist-audio-bitrate"
+                          className="block text-xs font-medium text-slate-300 mb-1"
+                        >
+                          Bitrate
+                        </label>
+                        <select
+                          id="playlist-audio-bitrate"
+                          value={playlistAudioBitrate}
+                          onChange={(e) => setPlaylistAudioBitrate(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+                        >
+                          <option value="best">Best Quality</option>
+                          <option value="320k">320 kbps</option>
+                          <option value="192k">192 kbps</option>
+                          <option value="128k">128 kbps</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {playlistSummary && (
+                  <div className="p-3 bg-emerald-950/40 border border-emerald-800/50 rounded-lg text-xs text-emerald-300">
+                    {playlistSummary}
+                  </div>
+                )}
+
+                {/* Submit Action */}
+                <div className="pt-2 flex justify-between items-center">
+                  <span className="text-xs text-slate-400">
+                    {selectedVideoIndices.size} video{selectedVideoIndices.size === 1 ? '' : 's'} to download
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleDownloadPlaylist}
+                    disabled={isPlaylistSubmitting || selectedVideoIndices.size === 0}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 bg-rose-600 hover:bg-rose-500 active:bg-rose-700 disabled:opacity-50 disabled:pointer-events-none rounded-lg font-medium text-sm text-white transition shadow-md cursor-pointer"
+                  >
+                    {isPlaylistSubmitting ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Download className="w-4 h-4" />
+                    )}
+                    Download Selected ({selectedVideoIndices.size})
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
 
         {/* Download Queue View */}
         <div id="download-queue">

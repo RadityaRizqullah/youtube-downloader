@@ -269,6 +269,91 @@ async def test_batch_all_invalid_urls():
             assert mock_enqueue.call_count == 0
 
 
+@pytest.mark.asyncio
+async def test_info_returns_playlist_metadata_for_playlist_url():
+    mock_playlist = {
+        "url": "https://www.youtube.com/playlist?list=PLrAXtmErZgOdP_8GztsuKi9nrraNbKKp4",
+        "title": "Lex Fridman Podcast",
+        "uploader": "Lex Fridman",
+        "video_count": 2,
+        "videos": [
+            {
+                "url": "https://www.youtube.com/watch?v=vid1",
+                "title": "Video 1",
+                "uploader": "Lex Fridman",
+                "duration_s": 120,
+                "thumbnail": "https://example.com/thumb1.jpg",
+                "available_qualities": [],
+            },
+            {
+                "url": "https://www.youtube.com/watch?v=vid2",
+                "title": "Video 2",
+                "uploader": "Lex Fridman",
+                "duration_s": 240,
+                "thumbnail": "https://example.com/thumb2.jpg",
+                "available_qualities": [],
+            },
+        ],
+    }
+    with patch("youtube_downloader.main.extract_playlist_info", return_value=mock_playlist):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                "/api/info",
+                params={"url": "https://www.youtube.com/playlist?list=PLrAXtmErZgOdP_8GztsuKi9nrraNbKKp4"},
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["title"] == "Lex Fridman Podcast"
+            assert data["uploader"] == "Lex Fridman"
+            assert data["video_count"] == 2
+            assert len(data["videos"]) == 2
+            assert data["videos"][0]["title"] == "Video 1"
+            assert data["videos"][1]["duration_s"] == 240
+
+
+@pytest.mark.asyncio
+async def test_create_playlist_jobs_expands_selection_into_pending_jobs():
+    with patch("youtube_downloader.main.queue_manager.enqueue") as mock_enqueue:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            payload = {
+                "videos": [
+                    {
+                        "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                        "title": "Track 1",
+                        "uploader": "Artist 1",
+                        "duration_s": 200,
+                        "thumbnail": "https://example.com/t1.jpg",
+                    },
+                    {
+                        "url": "https://www.youtube.com/watch?v=9bZkp7q19f0",
+                        "title": "Track 2",
+                        "uploader": "Artist 2",
+                        "duration_s": 250,
+                        "thumbnail": "https://example.com/t2.jpg",
+                    },
+                ],
+                "format": "mp4",
+                "quality": "720p",
+                "audio_only": False,
+            }
+            response = await client.post("/api/jobs/playlist", json=payload)
+            assert response.status_code == 201
+            data = response.json()
+            assert data["total_submitted"] == 2
+            assert data["total_queued"] == 2
+            assert data["total_failed"] == 0
+            assert len(data["queued"]) == 2
+
+            for job in data["queued"]:
+                assert job["state"] == "PENDING"
+                assert job["format"] == "mp4"
+                assert job["quality"] == "720p"
+                assert job["audio_only"] is False
+
+            assert mock_enqueue.call_count == 2
+
+
+
 
 
 

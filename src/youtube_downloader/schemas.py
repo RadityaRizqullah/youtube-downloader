@@ -17,6 +17,15 @@ class VideoMetadata(BaseModel):
     available_qualities: list[str] = []
 
 
+class PlaylistMetadata(BaseModel):
+    url: str
+    title: str
+    uploader: str = "Unknown Uploader"
+    video_count: int
+    videos: list[VideoMetadata] = []
+
+
+
 class DownloadJobCreate(BaseModel):
     url: str
     title: Optional[str] = None
@@ -75,5 +84,36 @@ class BatchDownloadResponse(BaseModel):
     total_submitted: int
     total_queued: int
     total_failed: int
+
+
+class VideoSelection(BaseModel):
+    url: str
+    title: Optional[str] = None
+    uploader: Optional[str] = None
+    duration_s: Optional[int] = None
+    thumbnail: Optional[str] = None
+
+
+class PlaylistDownloadRequest(BaseModel):
+    videos: list[VideoSelection] = []
+    format: str = "mp4"
+    quality: str = "best"
+    audio_only: bool = False
+
+
+class PlaylistDownloadError(BaseModel):
+    url: str
+    error: str
+
+
+# ponytail: simple summary response model; ceiling is per-job metadata pre-extraction, upgrade when async preview requested
+class PlaylistDownloadResponse(BaseModel):
+    queued: list[DownloadJobRead]
+    failed: list[PlaylistDownloadError]
+    total_submitted: int
+    total_queued: int
+    total_failed: int
+
+
 
 

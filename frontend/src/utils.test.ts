@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isValidYouTubeUrl, formatDuration, validateBatchUrls } from './utils'
+import { isValidYouTubeUrl, isPlaylistUrl, formatDuration, validateBatchUrls } from './utils'
 
 describe('isValidYouTubeUrl', () => {
   it('accepts standard youtube watch url', () => {
@@ -15,10 +15,27 @@ describe('isValidYouTubeUrl', () => {
     expect(isValidYouTubeUrl('https://www.youtube.com/shorts/dQw4w9WgXcQ')).toBe(true)
   })
 
+  it('accepts playlist url', () => {
+    expect(isValidYouTubeUrl('https://www.youtube.com/playlist?list=PLrAXtmErZgOdP_8GztsuKi9nrraNbKKp4')).toBe(true)
+    expect(isValidYouTubeUrl('https://youtube.com/playlist?list=PL12345')).toBe(true)
+  })
+
   it('rejects invalid urls', () => {
     expect(isValidYouTubeUrl('https://vimeo.com/12345')).toBe(false)
     expect(isValidYouTubeUrl('not a url')).toBe(false)
     expect(isValidYouTubeUrl('https://youtube.com/watch?v=too_short')).toBe(false)
+  })
+})
+
+describe('isPlaylistUrl', () => {
+  it('detects valid playlist urls', () => {
+    expect(isPlaylistUrl('https://www.youtube.com/playlist?list=PLrAXtmErZgOdP_8GztsuKi9nrraNbKKp4')).toBe(true)
+    expect(isPlaylistUrl('https://youtube.com/playlist?list=PL12345')).toBe(true)
+  })
+
+  it('returns false for single video urls without playlist', () => {
+    expect(isPlaylistUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBe(false)
+    expect(isPlaylistUrl('https://youtu.be/dQw4w9WgXcQ')).toBe(false)
   })
 })
 

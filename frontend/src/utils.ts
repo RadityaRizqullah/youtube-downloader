@@ -1,8 +1,20 @@
-const YOUTUBE_URL_REGEX =
+const YOUTUBE_VIDEO_REGEX =
   /^(https?:\/\/)?((www|m)\.)?(youtube\.com\/(watch\?.*v=|shorts\/|embed\/)|youtu\.be\/)([\w-]{11})([^\s]*)$/
 
+const YOUTUBE_PLAYLIST_REGEX =
+  /^(https?:\/\/)?((www|m)\.)?youtube\.com\/playlist\?([^\s]*&)?list=([\w-]+)([^\s]*)$/
+
+export function isPlaylistUrl(url: string): boolean {
+  const trimmed = url.trim()
+  return (
+    YOUTUBE_PLAYLIST_REGEX.test(trimmed) ||
+    (trimmed.includes('list=') && (trimmed.includes('playlist') || trimmed.includes('watch')))
+  )
+}
+
 export function isValidYouTubeUrl(url: string): boolean {
-  return YOUTUBE_URL_REGEX.test(url.trim())
+  const trimmed = url.trim()
+  return YOUTUBE_VIDEO_REGEX.test(trimmed) || isPlaylistUrl(trimmed)
 }
 
 export function formatDuration(seconds: number): string {
