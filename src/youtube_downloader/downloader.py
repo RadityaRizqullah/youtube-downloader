@@ -1,0 +1,216 @@
+import asyncio
+from pathlib import Path
+import threading
+from typing import Any
+import yt_dlp  # type: ignore[import-untyped]
+
+from youtube_downloader.database import SessionLocal
+from youtube_downloader.models import DownloadJob, JobState, Settings
+from youtube_downloader.ws import manager
+
+
+def get_default_output_folder() -> Path:
+    db = SessionLocal()
+    try:
+        settings = db.query(Settings).first()
+        folder_str = settings.output_folder if settings and settings.output_folder else "~/Downloads/youtube-downloader"
+        path = Path(folder_str).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    finally:
+        db.close()
+
+
+def build_ydl_opts(job: DownloadJob, outtmpl: str | None = None) -> dict[str, Any]:
+    opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+    }
+    if outtmpl:
+        opts["outtmpl"] = outtmpl
+
+    if job.audio_only:
+        opts["format"] = "bestaudio/best"
+        codec = job.format if job.format in ("mp3", "m4a", "opus") else "mp3"
+        quality_str = "0" if job.quality == "best" else job.quality.rstrip("k")
+        opts["postprocessors"] = [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": codec,
+            "preferredquality": quality_str,
+        }]
+    else:
+        container = job.format if job.format in ("mp4", "webm", "mkv") else "mp4"
+        opts["merge_output_format"] = container
+        if job.quality == "best" or not job.quality:
+            opts["format"] = "bestvideo+bestaudio/best"
+        else:
+            height = job.quality.rstrip("p")
+            opts["format"] = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]"
+
+    return opts
+
+
+class DownloadCancelled(Exception):
+    pass
+
+
+def run_download_job(
+    job_id: str,
+    loop: asyncio.AbstractEventLoop,
+    cancel_event: threading.Event | None = None,
+) -> None:
+    db = SessionLocal()
+    job: DownloadJob | None = None
+    try:
+        job = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+        if not job:
+            return
+
+        out_dir = get_default_output_folder()
+        template = str(out_dir / "%(title)s.%(ext)s")
+
+        job.state = JobState.DOWNLOADING.value
+        db.commit()
+
+        asyncio.run_coroutine_threadsafe(
+            manager.broadcast({
+                "id": job.id,
+                "state": job.state,
+                "progress": job.progress,
+                "error": None,
+                "output_path": None,
+            }),
+            loop,
+        )
+
+        final_path: list[str] = []
+
+        def progress_hook(d: dict[str, Any]) -> None:
+            if not job:
+                return
+            if cancel_event and cancel_event.is_set():
+                raise DownloadCancelled("Job cancelled by user")
+            status = d.get("status")
+            if status == "downloading":
+                total = float(d.get("total_bytes") or d.get("total_bytes_estimate") or 0.0)
+                downloaded = float(d.get("downloaded_bytes") or 0.0)
+                pct = round((downloaded / total * 100), 1) if total > 0 else 0.0
+                job.progress = pct
+                db.commit()
+                asyncio.run_coroutine_threadsafe(
+                    manager.broadcast({
+                        "id": job.id,
+                        "state": JobState.DOWNLOADING.value,
+                        "progress": pct,
+                        "error": None,
+                        "output_path": None,
+                    }),
+                    loop,
+                )
+            elif status == "finished":
+                filename = d.get("filename")
+                if filename:
+                    final_path.append(filename)
+
+        def postprocessor_hook(d: dict[str, Any]) -> None:
+            if not job:
+                return
+            if cancel_event and cancel_event.is_set():
+                raise DownloadCancelled("Job cancelled by user")
+            status = d.get("status")
+            if status == "started":
+                job.state = JobState.MERGING.value
+                db.commit()
+                asyncio.run_coroutine_threadsafe(
+                    manager.broadcast({
+                        "id": job.id,
+                        "state": JobState.MERGING.value,
+                        "progress": job.progress,
+                        "error": None,
+                        "output_path": None,
+                    }),
+                    loop,
+                )
+            elif status == "finished":
+                info_dict = d.get("info_dict") or {}
+                filename = info_dict.get("filepath") or d.get("filepath") or d.get("filename")
+                if filename:
+                    final_path.append(filename)
+
+        ydl_opts = build_ydl_opts(job, outtmpl=template)
+        ydl_opts.setdefault("progress_hooks", []).append(progress_hook)
+        ydl_opts.setdefault("postprocessor_hooks", []).append(postprocessor_hook)
+
+        if cancel_event and cancel_event.is_set():
+            raise DownloadCancelled("Job cancelled by user")
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(job.url, download=True)
+            if info:
+                # Update title and uploader if missing
+                if not job.title:
+                    job.title = info.get("title")
+                if not job.uploader:
+                    job.uploader = info.get("uploader")
+                if not job.duration_s:
+                    job.duration_s = int(info.get("duration") or 0)
+                if not job.thumbnail:
+                    job.thumbnail = info.get("thumbnail")
+
+                out_file = None
+                if final_path:
+                    out_file = final_path[-1]
+                elif "_filename" in info:
+                    out_file = info["_filename"]
+                job.output_path = out_file
+
+        if cancel_event and cancel_event.is_set():
+            raise DownloadCancelled("Job cancelled by user")
+
+        job.state = JobState.DONE.value
+        job.progress = 100.0
+        db.commit()
+
+        asyncio.run_coroutine_threadsafe(
+            manager.broadcast({
+                "id": job.id,
+                "state": job.state,
+                "progress": 100.0,
+                "error": None,
+                "output_path": job.output_path,
+            }),
+            loop,
+        )
+
+    except DownloadCancelled:
+        if job:
+            job.state = JobState.CANCELLED.value
+            job.error = "Cancelled by user"
+            db.commit()
+            asyncio.run_coroutine_threadsafe(
+                manager.broadcast({
+                    "id": job.id,
+                    "state": job.state,
+                    "progress": job.progress,
+                    "error": job.error,
+                    "output_path": None,
+                }),
+                loop,
+            )
+    except Exception as exc:
+        if job:
+            job.state = JobState.FAILED.value
+            job.error = str(exc)
+            db.commit()
+            asyncio.run_coroutine_threadsafe(
+                manager.broadcast({
+                    "id": job.id,
+                    "state": job.state,
+                    "progress": job.progress,
+                    "error": job.error,
+                    "output_path": None,
+                }),
+                loop,
+            )
+    finally:
+        db.close()
