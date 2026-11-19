@@ -18,9 +18,17 @@ class DownloadQueue:
     ) -> None:
         self._session_factory = session_factory or SessionLocal
         self.max_concurrency = max_concurrency
-        self._semaphore = asyncio.Semaphore(max_concurrency)
+        self._condition = asyncio.Condition()
+        self._running_count = 0
         self._tasks: set[asyncio.Task] = set()
         self._cancel_events: dict[str, threading.Event] = {}
+
+    async def update_concurrency(self, new_limit: int) -> None:
+        if new_limit < 1:
+            raise ValueError("Concurrency must be at least 1")
+        self.max_concurrency = new_limit
+        async with self._condition:
+            self._condition.notify_all()
 
     async def enqueue(self, job_id: str) -> None:
         loop = asyncio.get_running_loop()
@@ -34,9 +42,16 @@ class DownloadQueue:
     async def _process_job(
         self, job_id: str, loop: asyncio.AbstractEventLoop, cancel_event: threading.Event
     ) -> None:
-        async with self._semaphore:
+        async with self._condition:
+            await self._condition.wait_for(
+                lambda: self._running_count < self.max_concurrency or cancel_event.is_set()
+            )
             if cancel_event.is_set():
+                self._cancel_events.pop(job_id, None)
                 return
+            self._running_count += 1
+
+        try:
             db = self._session_factory()
             try:
                 job = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
@@ -49,11 +64,17 @@ class DownloadQueue:
                 await loop.run_in_executor(None, run_download_job, job_id, loop, cancel_event)
             finally:
                 self._cancel_events.pop(job_id, None)
+        finally:
+            async with self._condition:
+                self._running_count -= 1
+                self._condition.notify_all()
 
     async def cancel(self, job_id: str) -> bool:
         cancel_event = self._cancel_events.get(job_id)
         if cancel_event:
             cancel_event.set()
+            async with self._condition:
+                self._condition.notify_all()
 
         db = self._session_factory()
         try:
@@ -98,6 +119,8 @@ class DownloadQueue:
                     "output_path": None,
                 })
             db.commit()
+            async with self._condition:
+                self._condition.notify_all()
             return cancelled_count
         finally:
             db.close()
@@ -162,7 +185,6 @@ class DownloadQueue:
             settings = db.query(Settings).first()
             if settings and settings.max_concurrency:
                 self.max_concurrency = settings.max_concurrency
-                self._semaphore = asyncio.Semaphore(self.max_concurrency)
 
             interrupted_jobs = db.query(DownloadJob).filter(
                 DownloadJob.state.in_([

@@ -115,5 +115,25 @@ class PlaylistDownloadResponse(BaseModel):
     total_failed: int
 
 
+class SettingsRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
 
+    id: int = 1
+    output_folder: str = "~/Downloads/youtube-downloader"
+    max_concurrency: int = 3
+    filename_template: str = "%(title)s.%(ext)s"
+    default_format: str = "mp4"
+    default_quality: str = "best"
+    default_audio_format: str = "mp3"
+    default_audio_quality: str = "best"
+
+
+class SettingsUpdate(BaseModel):
+    output_folder: Optional[str] = None
+    max_concurrency: Optional[int] = None
+    filename_template: Optional[str] = None
+    default_format: Optional[str] = None
+    default_quality: Optional[str] = None
+    default_audio_format: Optional[str] = None
+    default_audio_quality: Optional[str] = None
 

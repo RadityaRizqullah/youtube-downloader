@@ -353,6 +353,103 @@ async def test_create_playlist_jobs_expands_selection_into_pending_jobs():
             assert mock_enqueue.call_count == 2
 
 
+@pytest.mark.asyncio
+async def test_get_settings():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/settings")
+        assert response.status_code == 200
+        data = response.json()
+        assert "output_folder" in data
+        assert "max_concurrency" in data
+        assert "filename_template" in data
+        assert "default_format" in data
+        assert "default_quality" in data
+        assert "default_audio_format" in data
+        assert "default_audio_quality" in data
+
+
+@pytest.mark.asyncio
+async def test_update_settings_valid(tmp_path):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        out_folder = str(tmp_path / "downloads")
+        payload = {
+            "output_folder": out_folder,
+            "max_concurrency": 5,
+            "filename_template": "%(uploader)s - %(title)s.%(ext)s",
+            "default_format": "mkv",
+            "default_quality": "1080p",
+            "default_audio_format": "m4a",
+            "default_audio_quality": "320k",
+        }
+        response = await client.put("/api/settings", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["output_folder"] == out_folder
+        assert data["max_concurrency"] == 5
+        assert data["filename_template"] == "%(uploader)s - %(title)s.%(ext)s"
+        assert data["default_format"] == "mkv"
+        assert data["default_quality"] == "1080p"
+        assert data["default_audio_format"] == "m4a"
+        assert data["default_audio_quality"] == "320k"
+
+
+@pytest.mark.asyncio
+async def test_update_settings_rejects_invalid_concurrency():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Concurrency 0 (< 1)
+        res = await client.put("/api/settings", json={"max_concurrency": 0})
+        assert res.status_code in (400, 422)
+
+        # Concurrency 11 (> 10)
+        res = await client.put("/api/settings", json={"max_concurrency": 11})
+        assert res.status_code in (400, 422)
+
+
+@pytest.mark.asyncio
+async def test_update_settings_rejects_invalid_output_folder(monkeypatch):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Non-writable or OS permission error
+        def mock_mkdir_fail(*args, **kwargs):
+            raise PermissionError("Access denied")
+
+        monkeypatch.setattr("pathlib.Path.mkdir", mock_mkdir_fail)
+        res = await client.put("/api/settings", json={"output_folder": "/protected/directory"})
+        assert res.status_code == 400
+        assert "not writable" in res.json()["detail"].lower() or "invalid" in res.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_update_settings_rejects_invalid_format():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        res = await client.put("/api/settings", json={"default_format": "avi"})
+        assert res.status_code in (400, 422)
+
+
+@pytest.mark.asyncio
+async def test_update_settings_rejects_invalid_filename_template():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Missing %(ext)s
+        res = await client.put("/api/settings", json={"filename_template": "video_without_ext"})
+        assert res.status_code == 400
+        assert "%(ext)s" in res.json()["detail"]
+
+        # Empty template
+        res = await client.put("/api/settings", json={"filename_template": "   "})
+        assert res.status_code == 400
+
+        # Directory traversal
+        res = await client.put("/api/settings", json={"filename_template": "../%(title)s.%(ext)s"})
+        assert res.status_code == 400
+        assert "directory traversal" in res.json()["detail"]
+
+        # Absolute path
+        res = await client.put("/api/settings", json={"filename_template": "/tmp/%(title)s.%(ext)s"})
+        assert res.status_code == 400
+        assert "absolute" in res.json()["detail"]
+
+
+
+
 
 
 

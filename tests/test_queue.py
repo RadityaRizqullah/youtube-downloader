@@ -378,3 +378,51 @@ async def test_disk_db_persistence_across_restarts(tmp_path):
     reboot_engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_dynamic_concurrency_update(test_db):
+    db = test_db()
+    j0 = DownloadJob(id="dyn-0", url="https://www.youtube.com/watch?v=dyn0", state=JobState.PENDING.value)
+    j1 = DownloadJob(id="dyn-1", url="https://www.youtube.com/watch?v=dyn1", state=JobState.PENDING.value)
+    db.add(j0)
+    db.add(j1)
+    db.commit()
+    db.close()
+
+    started_events = [asyncio.Event(), asyncio.Event()]
+    release_events = [threading.Event(), threading.Event()]
+
+    def fake_worker(job_id: str, loop, cancel_event=None):
+        idx = int(job_id.split("-")[1])
+        loop.call_soon_threadsafe(started_events[idx].set)
+        release_events[idx].wait(timeout=5)
+
+    qm = DownloadQueue(session_factory=test_db, max_concurrency=1)
+    assert qm.max_concurrency == 1
+
+    with pytest.raises(ValueError):
+        await qm.update_concurrency(0)
+
+    with patch("youtube_downloader.queue.run_download_job", side_effect=fake_worker):
+        # Enqueue both
+        t0 = asyncio.create_task(qm.enqueue("dyn-0"))
+        t1 = asyncio.create_task(qm.enqueue("dyn-1"))
+
+        # dyn-0 should start, dyn-1 should remain waiting because max_concurrency is 1
+        await asyncio.wait_for(started_events[0].wait(), timeout=2.0)
+        await asyncio.sleep(0.05)
+        assert not started_events[1].is_set()
+
+        # Dynamically increase concurrency to 2 -> dyn-1 should immediately wake and run
+        await qm.update_concurrency(2)
+        assert qm.max_concurrency == 2
+        await asyncio.wait_for(started_events[1].wait(), timeout=2.0)
+        assert started_events[1].is_set()
+
+        # Release both jobs
+        release_events[0].set()
+        release_events[1].set()
+        await asyncio.gather(t0, t1)
+
+
+
+

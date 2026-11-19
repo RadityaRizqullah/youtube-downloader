@@ -59,3 +59,5 @@ class Settings(Base):
     filename_template: Mapped[str] = mapped_column(Text, default="%(title)s.%(ext)s")
     default_format: Mapped[str] = mapped_column(String, default="mp4")
     default_quality: Mapped[str] = mapped_column(String, default="best")
+    default_audio_format: Mapped[str] = mapped_column(String, default="mp3")
+    default_audio_quality: Mapped[str] = mapped_column(String, default="best")

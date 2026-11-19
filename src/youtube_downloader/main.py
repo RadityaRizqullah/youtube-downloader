@@ -1,7 +1,9 @@
 import asyncio
 from contextlib import asynccontextmanager
+import logging
 from typing import List, Optional, Union
 from pathlib import Path
+import uuid
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -16,7 +18,7 @@ from youtube_downloader.extractor import (
     is_playlist_url,
     is_valid_youtube_url,
 )
-from youtube_downloader.models import DownloadJob, JobState
+from youtube_downloader.models import DownloadJob, JobState, Settings
 from youtube_downloader.queue import QueueManager
 from youtube_downloader.schemas import (
     BatchDownloadError,
@@ -29,6 +31,8 @@ from youtube_downloader.schemas import (
     PlaylistDownloadRequest,
     PlaylistDownloadResponse,
     PlaylistMetadata,
+    SettingsRead,
+    SettingsUpdate,
     VideoMetadata,
     VideoSelection,
 )
@@ -40,6 +44,10 @@ queue_manager = QueueManager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    if not check_ffmpeg():
+        logging.getLogger("uvicorn.error").warning(
+            "FFmpeg not found on system PATH. High-resolution merging will fail."
+        )
     await queue_manager.startup()
     yield
 
@@ -58,6 +66,119 @@ app.add_middleware(
 @app.get("/api/health", response_model=HealthResponse)
 async def get_health():
     return HealthResponse(ffmpeg=check_ffmpeg())
+
+
+VALID_VIDEO_FORMATS = {"mp4", "webm", "mkv"}
+VALID_VIDEO_QUALITIES = {"best", "1080p", "720p", "480p", "360p"}
+VALID_AUDIO_FORMATS = {"mp3", "m4a", "opus"}
+VALID_AUDIO_QUALITIES = {"best", "320k", "192k", "128k"}
+
+
+@app.get("/api/settings", response_model=SettingsRead)
+async def get_settings(db: Session = Depends(get_db)):
+    settings = db.query(Settings).first()
+    if not settings:
+        settings = Settings(id=1)
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+    return settings
+
+
+# ponytail: synchronous write probe for local paths; upgrade to async storage validation if cloud/network mounts supported
+@app.put("/api/settings", response_model=SettingsRead)
+async def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)):
+    settings = db.query(Settings).first()
+    if not settings:
+        settings = Settings(id=1)
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+
+    if payload.max_concurrency is not None:
+        if payload.max_concurrency < 1 or payload.max_concurrency > 10:
+            raise HTTPException(
+                status_code=400,
+                detail="Max concurrency must be between 1 and 10",
+            )
+        settings.max_concurrency = payload.max_concurrency
+        await queue_manager.update_concurrency(payload.max_concurrency)
+
+    if payload.output_folder is not None:
+        folder_str = payload.output_folder.strip()
+        if not folder_str:
+            raise HTTPException(status_code=400, detail="Output folder cannot be empty")
+        try:
+            folder_path = Path(folder_str).expanduser()
+            folder_path.mkdir(parents=True, exist_ok=True)
+            probe = folder_path / f".write_test_{uuid.uuid4().hex}"
+            probe.touch(exist_ok=False)
+            probe.unlink(missing_ok=True)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Output folder is not writable or cannot be created: {exc}",
+            )
+        settings.output_folder = folder_str
+
+    if payload.filename_template is not None:
+        tmpl = payload.filename_template.strip()
+        if not tmpl:
+            raise HTTPException(status_code=400, detail="Filename template cannot be empty")
+        if "%(ext)s" not in tmpl:
+            raise HTTPException(
+                status_code=400,
+                detail="Filename template must include '%(ext)s' container extension placeholder",
+            )
+        tmpl_path = Path(tmpl)
+        if (
+            tmpl.startswith(("/", "\\"))
+            or tmpl_path.is_absolute()
+            or (len(tmpl) > 1 and tmpl[1] == ":")
+            or ".." in tmpl_path.parts
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Filename template cannot be absolute or contain directory traversal",
+            )
+        settings.filename_template = tmpl
+
+    if payload.default_format is not None:
+        if payload.default_format not in VALID_VIDEO_FORMATS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid default video format. Allowed: {sorted(VALID_VIDEO_FORMATS)}",
+            )
+        settings.default_format = payload.default_format
+
+    if payload.default_quality is not None:
+        if payload.default_quality not in VALID_VIDEO_QUALITIES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid default video quality. Allowed: {sorted(VALID_VIDEO_QUALITIES)}",
+            )
+        settings.default_quality = payload.default_quality
+
+    if payload.default_audio_format is not None:
+        if payload.default_audio_format not in VALID_AUDIO_FORMATS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid default audio format. Allowed: {sorted(VALID_AUDIO_FORMATS)}",
+            )
+        settings.default_audio_format = payload.default_audio_format
+
+    if payload.default_audio_quality is not None:
+        if payload.default_audio_quality not in VALID_AUDIO_QUALITIES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid default audio quality. Allowed: {sorted(VALID_AUDIO_QUALITIES)}",
+            )
+        settings.default_audio_quality = payload.default_audio_quality
+
+    db.commit()
+    db.refresh(settings)
+    return settings
+
 
 
 @app.get("/api/info", response_model=Union[PlaylistMetadata, VideoMetadata])

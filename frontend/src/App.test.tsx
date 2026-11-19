@@ -762,7 +762,139 @@ describe('App Walking Skeleton', () => {
     const playlistTabBtn = screen.getByRole('button', { name: /^playlist download$/i })
     expect(playlistTabBtn.className).toContain('text-rose-400')
   })
+
+  it('renders dismissible FFmpeg warning banner when ffmpeg is false, and allows dismissing it', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const urlStr = url.toString()
+      if (urlStr.includes('/api/health')) {
+        return { ok: true, json: async () => ({ ffmpeg: false, version: '0.1.0' }) } as Response
+      }
+      return { ok: true, json: async () => ({}) } as Response
+    })
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByText(/ffmpeg was not detected/i)).toBeInTheDocument()
+    })
+
+    const dismissBtn = screen.getByRole('button', { name: /dismiss/i })
+    fireEvent.click(dismissBtn)
+
+    expect(screen.queryByText(/ffmpeg was not detected/i)).not.toBeInTheDocument()
+  })
+
+  it('renders permanent legal disclaimer in footer', async () => {
+    render(<App />)
+
+    const footer = screen.getByRole('contentinfo')
+    expect(footer).toBeInTheDocument()
+    expect(footer).toHaveTextContent(/only download content you own or are authorized to download/i)
+  })
+
+  it('navigates to Settings tab, displays and updates settings via PUT /api/settings', async () => {
+    const mockSettings = {
+      output_folder: '~/Downloads/youtube-downloader',
+      max_concurrency: 3,
+      filename_template: '%(title)s.%(ext)s',
+      default_format: 'mp4',
+      default_quality: 'best',
+      default_audio_format: 'mp3',
+      default_audio_quality: 'best',
+    }
+
+    let putPayload: {
+      output_folder?: string
+      max_concurrency?: number
+      filename_template?: string
+    } | null = null
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, opts) => {
+      const urlStr = url.toString()
+      if (urlStr.includes('/api/settings')) {
+        if (opts?.method === 'PUT') {
+          putPayload = JSON.parse(opts.body as string)
+          return { ok: true, json: async () => ({ ...mockSettings, ...putPayload }) } as Response
+        }
+        return { ok: true, json: async () => mockSettings } as Response
+      }
+      return { ok: true, json: async () => ({}) } as Response
+    })
+
+    render(<App />)
+
+    // Click Settings tab
+    const settingsTab = screen.getByRole('button', { name: /settings/i })
+    fireEvent.click(settingsTab)
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/output folder/i)).toHaveValue('~/Downloads/youtube-downloader')
+      expect(screen.getByLabelText(/^max concurrency/i)).toHaveValue('3')
+      expect(screen.getByLabelText(/filename template/i)).toHaveValue('%(title)s.%(ext)s')
+    })
+
+    // Update settings
+    fireEvent.change(screen.getByLabelText(/output folder/i), {
+      target: { value: 'D:/CustomDownloads' },
+    })
+    fireEvent.change(screen.getByLabelText(/^max concurrency/i), {
+      target: { value: '6' },
+    })
+    fireEvent.change(screen.getByLabelText(/filename template/i), {
+      target: { value: '%(uploader)s/%(title)s.%(ext)s' },
+    })
+
+    const saveBtn = screen.getByRole('button', { name: /save settings/i })
+    fireEvent.click(saveBtn)
+
+    await waitFor(() => {
+      expect(putPayload).not.toBeNull()
+    })
+
+    expect(putPayload!.output_folder).toBe('D:/CustomDownloads')
+    expect(putPayload!.max_concurrency).toBe(6)
+    expect(putPayload!.filename_template).toBe('%(uploader)s/%(title)s.%(ext)s')
+    expect(screen.getByText(/settings saved successfully/i)).toBeInTheDocument()
+  })
+
+  it('displays error message when saving settings fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, opts) => {
+      const urlStr = url.toString()
+      if (urlStr.includes('/api/settings')) {
+        if (opts?.method === 'PUT') {
+          return {
+            ok: false,
+            json: async () => ({ detail: 'Output folder is not writable' }),
+          } as Response
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            output_folder: '~/Downloads/youtube-downloader',
+            max_concurrency: 3,
+            filename_template: '%(title)s.%(ext)s',
+            default_format: 'mp4',
+            default_quality: 'best',
+            default_audio_format: 'mp3',
+            default_audio_quality: 'best',
+          }),
+        } as Response
+      }
+      return { ok: true, json: async () => ({}) } as Response
+    })
+
+    render(<App />)
+
+    fireEvent.click(screen.getByRole('button', { name: /settings/i }))
+    await waitFor(() => {
+      expect(screen.getByLabelText(/output folder/i)).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /save settings/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/output folder is not writable/i)).toBeInTheDocument()
+    })
+  })
 })
-
-
 

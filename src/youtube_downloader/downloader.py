@@ -4,13 +4,17 @@ import threading
 from typing import Any
 import yt_dlp  # type: ignore[import-untyped]
 
+from sqlalchemy.orm import Session
 from youtube_downloader.database import SessionLocal
 from youtube_downloader.models import DownloadJob, JobState, Settings
 from youtube_downloader.ws import manager
 
 
-def get_default_output_folder() -> Path:
-    db = SessionLocal()
+def get_default_output_folder(db: Session | None = None) -> Path:
+    close_db = False
+    if db is None:
+        db = SessionLocal()
+        close_db = True
     try:
         settings = db.query(Settings).first()
         folder_str = settings.output_folder if settings and settings.output_folder else "~/Downloads/youtube-downloader"
@@ -18,7 +22,8 @@ def get_default_output_folder() -> Path:
         path.mkdir(parents=True, exist_ok=True)
         return path
     finally:
-        db.close()
+        if close_db:
+            db.close()
 
 
 def build_ydl_opts(job: DownloadJob, outtmpl: str | None = None) -> dict[str, Any]:
@@ -66,8 +71,18 @@ def run_download_job(
         if not job:
             return
 
-        out_dir = get_default_output_folder()
-        template = str(out_dir / "%(title)s.%(ext)s")
+        settings = db.query(Settings).first()
+        out_dir = get_default_output_folder(db)
+        tmpl = settings.filename_template if settings and settings.filename_template else "%(title)s.%(ext)s"
+        p_tmpl = Path(tmpl)
+        if (
+            tmpl.startswith(("/", "\\"))
+            or p_tmpl.is_absolute()
+            or (len(tmpl) > 1 and tmpl[1] == ":")
+            or ".." in p_tmpl.parts
+        ):
+            tmpl = "%(title)s.%(ext)s"
+        template = str(out_dir / tmpl)
 
         job.state = JobState.DOWNLOADING.value
         db.commit()

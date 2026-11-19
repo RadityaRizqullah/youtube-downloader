@@ -1,6 +1,16 @@
 import { useState, useEffect, useRef } from 'react'
 import { isValidYouTubeUrl, isPlaylistUrl, formatDuration, validateBatchUrls } from './utils'
-import { AlertCircle, AlertTriangle, Download, Eye, Film, Loader2 } from 'lucide-react'
+import {
+  AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
+  Download,
+  Eye,
+  Film,
+  Loader2,
+  Settings as SettingsIcon,
+  X,
+} from 'lucide-react'
 import { DownloadQueue, type DownloadJob } from './DownloadQueue'
 
 interface VideoMetadata {
@@ -30,6 +40,7 @@ export default function App() {
   const [jobs, setJobs] = useState<DownloadJob[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [ffmpegInstalled, setFfmpegInstalled] = useState<boolean | null>(null)
+  const [ffmpegDismissed, setFfmpegDismissed] = useState(false)
 
   // Quality & Format selections
   const [audioOnly, setAudioOnly] = useState(false)
@@ -39,7 +50,19 @@ export default function App() {
   const [audioBitrate, setAudioBitrate] = useState('best')
 
   // Navigation mode
-  const [activeTab, setActiveTab] = useState<'single' | 'batch' | 'playlist'>('single')
+  const [activeTab, setActiveTab] = useState<'single' | 'batch' | 'playlist' | 'settings'>('single')
+
+  // Settings state
+  const [outputFolder, setOutputFolder] = useState('~/Downloads/youtube-downloader')
+  const [maxConcurrency, setMaxConcurrency] = useState(3)
+  const [filenameTemplate, setFilenameTemplate] = useState('%(title)s.%(ext)s')
+  const [settingsVideoFormat, setSettingsVideoFormat] = useState('mp4')
+  const [settingsVideoQuality, setSettingsVideoQuality] = useState('best')
+  const [settingsAudioFormat, setSettingsAudioFormat] = useState('mp3')
+  const [settingsAudioBitrate, setSettingsAudioBitrate] = useState('best')
+  const [isSettingsSaving, setIsSettingsSaving] = useState(false)
+  const [settingsSuccessMsg, setSettingsSuccessMsg] = useState('')
+  const [settingsErrorMsg, setSettingsErrorMsg] = useState('')
 
   // Batch Download state
   const [batchInput, setBatchInput] = useState('')
@@ -71,13 +94,48 @@ export default function App() {
 
   const wsRef = useRef<WebSocket | null>(null)
 
-  // Check backend health, FFmpeg & load queue on startup
+  // Check backend health, FFmpeg, settings & load queue on startup
   useEffect(() => {
     fetch('/api/health')
       .then((res) => res.json())
       .then((data) => {
         if (typeof data.ffmpeg === 'boolean') {
           setFfmpegInstalled(data.ffmpeg)
+        }
+      })
+      .catch(() => {})
+
+    fetch('/api/settings')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && typeof data === 'object') {
+          if (data.output_folder) setOutputFolder(data.output_folder)
+          if (typeof data.max_concurrency === 'number') setMaxConcurrency(data.max_concurrency)
+          if (data.filename_template) setFilenameTemplate(data.filename_template)
+          if (data.default_format) {
+            setSettingsVideoFormat(data.default_format)
+            setVideoFormat(data.default_format)
+            setBatchVideoFormat(data.default_format)
+            setPlaylistVideoFormat(data.default_format)
+          }
+          if (data.default_quality) {
+            setSettingsVideoQuality(data.default_quality)
+            setVideoQuality(data.default_quality)
+            setBatchVideoQuality(data.default_quality)
+            setPlaylistVideoQuality(data.default_quality)
+          }
+          if (data.default_audio_format) {
+            setSettingsAudioFormat(data.default_audio_format)
+            setAudioFormat(data.default_audio_format)
+            setBatchAudioFormat(data.default_audio_format)
+            setPlaylistAudioFormat(data.default_audio_format)
+          }
+          if (data.default_audio_quality) {
+            setSettingsAudioBitrate(data.default_audio_quality)
+            setAudioBitrate(data.default_audio_quality)
+            setBatchAudioBitrate(data.default_audio_quality)
+            setPlaylistAudioBitrate(data.default_audio_quality)
+          }
         }
       })
       .catch(() => {})
@@ -473,6 +531,71 @@ export default function App() {
     }
   }
 
+  const handleSaveSettings = async () => {
+    setIsSettingsSaving(true)
+    setSettingsSuccessMsg('')
+    setSettingsErrorMsg('')
+
+    try {
+      const payload = {
+        output_folder: outputFolder,
+        max_concurrency: Number(maxConcurrency),
+        filename_template: filenameTemplate,
+        default_format: settingsVideoFormat,
+        default_quality: settingsVideoQuality,
+        default_audio_format: settingsAudioFormat,
+        default_audio_quality: settingsAudioBitrate,
+      }
+
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        let msg = 'Failed to update settings'
+        if (typeof err.detail === 'string') {
+          msg = err.detail
+        } else if (Array.isArray(err.detail) && err.detail.length > 0) {
+          msg = err.detail.map((d: { msg?: string }) => d.msg || JSON.stringify(d)).join('; ')
+        }
+        throw new Error(msg)
+      }
+
+      const data = await res.json()
+      setOutputFolder(data.output_folder)
+      setMaxConcurrency(data.max_concurrency)
+      setFilenameTemplate(data.filename_template)
+      setSettingsVideoFormat(data.default_format)
+      setSettingsVideoQuality(data.default_quality)
+      setSettingsAudioFormat(data.default_audio_format)
+      setSettingsAudioBitrate(data.default_audio_quality)
+
+      setVideoFormat(data.default_format)
+      setVideoQuality(data.default_quality)
+      setBatchVideoFormat(data.default_format)
+      setBatchVideoQuality(data.default_quality)
+      setPlaylistVideoFormat(data.default_format)
+      setPlaylistVideoQuality(data.default_quality)
+
+      setAudioFormat(data.default_audio_format)
+      setAudioBitrate(data.default_audio_quality)
+      setBatchAudioFormat(data.default_audio_format)
+      setBatchAudioBitrate(data.default_audio_quality)
+      setPlaylistAudioFormat(data.default_audio_format)
+      setPlaylistAudioBitrate(data.default_audio_quality)
+
+      setSettingsSuccessMsg('Settings saved successfully.')
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Error updating settings'
+      setSettingsErrorMsg(message)
+    } finally {
+      setIsSettingsSaving(false)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col items-center px-4 py-8">
       <div className="w-full max-w-2xl space-y-6">
@@ -486,7 +609,9 @@ export default function App() {
                 ? 'Single Video Preview & Download'
                 : activeTab === 'batch'
                 ? 'Batch URL Input & Queueing'
-                : 'Playlist Preview & Selective Download'}
+                : activeTab === 'playlist'
+                ? 'Playlist Preview & Selective Download'
+                : 'Application Preferences & Defaults'}
             </p>
           </div>
         </header>
@@ -498,12 +623,23 @@ export default function App() {
         </div>
 
         {/* FFmpeg Warning Banner */}
-        {ffmpegInstalled === false && (
-          <div className="flex items-center space-x-2 bg-amber-950/50 border border-amber-600/40 rounded-lg p-3 text-amber-200 text-sm">
-            <AlertTriangle className="w-5 h-5 shrink-0 text-amber-500" />
-            <span>
-              FFmpeg was not detected on system PATH. High-quality video and audio merging will fail.
-            </span>
+        {ffmpegInstalled === false && !ffmpegDismissed && (
+          <div className="flex items-center justify-between bg-amber-950/50 border border-amber-600/40 rounded-lg p-3 text-amber-200 text-sm">
+            <div className="flex items-center space-x-2">
+              <AlertTriangle className="w-5 h-5 shrink-0 text-amber-500" />
+              <span>
+                FFmpeg was not detected on system PATH. High-quality video and audio merging will fail.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setFfmpegDismissed(true)}
+              aria-label="Dismiss warning"
+              className="text-amber-400 hover:text-amber-200 px-2 py-1 rounded hover:bg-amber-900/40 transition cursor-pointer text-xs flex items-center gap-1 shrink-0 ml-2"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>Dismiss</span>
+            </button>
           </div>
         )}
 
@@ -541,6 +677,18 @@ export default function App() {
             }`}
           >
             Playlist Download
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('settings')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition cursor-pointer flex items-center gap-1.5 ${
+              activeTab === 'settings'
+                ? 'border-rose-500 text-rose-400'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <SettingsIcon className="w-4 h-4" />
+            Settings
           </button>
         </div>
 
@@ -1207,6 +1355,229 @@ export default function App() {
         )}
 
 
+        {/* Settings Mode */}
+        {activeTab === 'settings' && (
+          <div className="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-lg space-y-4 animate-in fade-in duration-200">
+            <div className="border-b border-slate-700/60 pb-3">
+              <h2 className="text-base font-semibold text-slate-100 flex items-center gap-2">
+                <SettingsIcon className="w-4 h-4 text-rose-500" />
+                Application Preferences
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Configure download folder, queue concurrency limits, filename templates, and default formats.
+              </p>
+            </div>
+
+            {/* Output Folder */}
+            <div className="space-y-1.5">
+              <label htmlFor="settings-output-folder" className="block text-xs font-medium text-slate-300">
+                Output Folder
+              </label>
+              <input
+                id="settings-output-folder"
+                type="text"
+                value={outputFolder}
+                onChange={(e) => {
+                  setOutputFolder(e.target.value)
+                  setSettingsSuccessMsg('')
+                  setSettingsErrorMsg('')
+                }}
+                placeholder="~/Downloads/youtube-downloader"
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500/50 font-mono"
+              />
+              <p className="text-[11px] text-slate-400">
+                Directory on host where finished downloads are saved. Created if not existing.
+              </p>
+            </div>
+
+            {/* Max Concurrency */}
+            <div className="space-y-1.5">
+              <div className="flex justify-between items-center">
+                <label htmlFor="settings-concurrency" className="block text-xs font-medium text-slate-300">
+                  Max Concurrency (1–10)
+                </label>
+                <span className="text-xs font-mono text-rose-400 font-semibold">{maxConcurrency}</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <input
+                  id="settings-concurrency"
+                  type="range"
+                  min="1"
+                  max="10"
+                  value={maxConcurrency}
+                  onChange={(e) => {
+                    setMaxConcurrency(Number(e.target.value))
+                    setSettingsSuccessMsg('')
+                    setSettingsErrorMsg('')
+                  }}
+                  className="flex-1 accent-rose-500 cursor-pointer"
+                />
+                <input
+                  type="number"
+                  min="1"
+                  max="10"
+                  aria-label="parallel-limit-number"
+                  value={maxConcurrency}
+                  onChange={(e) => {
+                    const val = Math.max(1, Math.min(10, Number(e.target.value) || 1))
+                    setMaxConcurrency(val)
+                    setSettingsSuccessMsg('')
+                    setSettingsErrorMsg('')
+                  }}
+                  className="w-16 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-100 text-center focus:outline-none focus:ring-2 focus:ring-rose-500/50 font-mono"
+                />
+              </div>
+              <p className="text-[11px] text-slate-400">
+                Maximum number of parallel downloads allowed at once. Applies dynamically to scheduler.
+              </p>
+            </div>
+
+            {/* Filename Template */}
+            <div className="space-y-1.5">
+              <label htmlFor="settings-filename-template" className="block text-xs font-medium text-slate-300">
+                Filename Template
+              </label>
+              <input
+                id="settings-filename-template"
+                type="text"
+                value={filenameTemplate}
+                onChange={(e) => {
+                  setFilenameTemplate(e.target.value)
+                  setSettingsSuccessMsg('')
+                  setSettingsErrorMsg('')
+                }}
+                placeholder="%(title)s.%(ext)s"
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500/50 font-mono"
+              />
+              <p className="text-[11px] text-slate-400">
+                Supported placeholders: <code className="text-rose-400">%(title)s</code>, <code className="text-rose-400">%(uploader)s</code>, <code className="text-rose-400">%(id)s</code>, <code className="text-rose-400">%(ext)s</code>. Must contain <code className="text-rose-400">%(ext)s</code>.
+              </p>
+            </div>
+
+            {/* Default Format Preferences */}
+            <div className="space-y-3 pt-2 border-t border-slate-700/60">
+              <h3 className="text-xs font-semibold text-slate-300">Default Format & Quality Preferences</h3>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="settings-default-video-format" className="block text-xs font-medium text-slate-300 mb-1">
+                    Default Video Format
+                  </label>
+                  <select
+                    id="settings-default-video-format"
+                    value={settingsVideoFormat}
+                    onChange={(e) => {
+                      setSettingsVideoFormat(e.target.value)
+                      setSettingsSuccessMsg('')
+                      setSettingsErrorMsg('')
+                    }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+                  >
+                    <option value="mp4">MP4</option>
+                    <option value="webm">WebM</option>
+                    <option value="mkv">MKV</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="settings-default-video-quality" className="block text-xs font-medium text-slate-300 mb-1">
+                    Default Video Quality
+                  </label>
+                  <select
+                    id="settings-default-video-quality"
+                    value={settingsVideoQuality}
+                    onChange={(e) => {
+                      setSettingsVideoQuality(e.target.value)
+                      setSettingsSuccessMsg('')
+                      setSettingsErrorMsg('')
+                    }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+                  >
+                    <option value="best">Best Quality</option>
+                    <option value="1080p">1080p</option>
+                    <option value="720p">720p</option>
+                    <option value="480p">480p</option>
+                    <option value="360p">360p</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="settings-default-audio-format" className="block text-xs font-medium text-slate-300 mb-1">
+                    Default Audio Format
+                  </label>
+                  <select
+                    id="settings-default-audio-format"
+                    value={settingsAudioFormat}
+                    onChange={(e) => {
+                      setSettingsAudioFormat(e.target.value)
+                      setSettingsSuccessMsg('')
+                      setSettingsErrorMsg('')
+                    }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+                  >
+                    <option value="mp3">MP3</option>
+                    <option value="m4a">M4A</option>
+                    <option value="opus">Opus</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="settings-default-audio-bitrate" className="block text-xs font-medium text-slate-300 mb-1">
+                    Default Audio Bitrate
+                  </label>
+                  <select
+                    id="settings-default-audio-bitrate"
+                    value={settingsAudioBitrate}
+                    onChange={(e) => {
+                      setSettingsAudioBitrate(e.target.value)
+                      setSettingsSuccessMsg('')
+                      setSettingsErrorMsg('')
+                    }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+                  >
+                    <option value="best">Best Quality</option>
+                    <option value="320k">320 kbps</option>
+                    <option value="192k">192 kbps</option>
+                    <option value="128k">128 kbps</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Feedback Messages */}
+            {settingsSuccessMsg && (
+              <div className="p-3 bg-emerald-950/40 border border-emerald-800/50 rounded-lg text-xs text-emerald-300 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{settingsSuccessMsg}</span>
+              </div>
+            )}
+
+            {settingsErrorMsg && (
+              <div className="p-3 bg-rose-950/40 border border-rose-800/50 rounded-lg text-xs text-rose-300 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{settingsErrorMsg}</span>
+              </div>
+            )}
+
+            {/* Save Button */}
+            <div className="pt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={handleSaveSettings}
+                disabled={isSettingsSaving}
+                className="inline-flex items-center gap-2 px-5 py-2.5 bg-rose-600 hover:bg-rose-500 active:bg-rose-700 disabled:opacity-50 disabled:pointer-events-none rounded-lg font-medium text-sm text-white transition shadow-md cursor-pointer"
+              >
+                {isSettingsSaving ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <SettingsIcon className="w-4 h-4" />
+                )}
+                Save Settings
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Download Queue View */}
         <div id="download-queue">
           <DownloadQueue
@@ -1218,6 +1589,11 @@ export default function App() {
             onClearCompleted={handleClearCompleted}
           />
         </div>
+
+        {/* Permanent Legal Notice Footer */}
+        <footer className="w-full border-t border-slate-800/80 pt-6 mt-8 text-center text-xs text-slate-400 leading-relaxed">
+          Only download content you own or are authorized to download, in compliance with YouTube's Terms of Service and applicable copyright law.
+        </footer>
       </div>
     </div>
   )
