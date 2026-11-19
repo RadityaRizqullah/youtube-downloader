@@ -213,4 +213,62 @@ async def test_api_retry_and_clear():
         assert "cleared" in clear_res.json()
 
 
+@pytest.mark.asyncio
+async def test_batch_create_download_jobs():
+    with patch("youtube_downloader.main.queue_manager.enqueue") as mock_enqueue:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            payload = {
+                "urls": [
+                    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "   ",
+                    "not-a-valid-url",
+                    "https://youtu.be/9bZkp7q19f0",
+                ],
+                "format": "mp3",
+                "quality": "320k",
+                "audio_only": True,
+            }
+            response = await client.post("/api/jobs/batch", json=payload)
+            assert response.status_code == 201
+            data = response.json()
+            assert data["total_submitted"] == 3
+            assert data["total_queued"] == 2
+            assert data["total_failed"] == 1
+            assert len(data["queued"]) == 2
+            assert len(data["failed"]) == 1
+            assert data["failed"][0]["url"] == "not-a-valid-url"
+            assert "Invalid YouTube URL" in data["failed"][0]["error"]
+
+            for job in data["queued"]:
+                assert job["state"] == "PENDING"
+                assert job["audio_only"] is True
+                assert job["format"] == "mp3"
+                assert job["quality"] == "320k"
+
+            assert mock_enqueue.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_batch_all_invalid_urls():
+    with patch("youtube_downloader.main.queue_manager.enqueue") as mock_enqueue:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            payload = {
+                "urls": ["invalid-1", "invalid-2"],
+                "format": "mp4",
+                "quality": "best",
+                "audio_only": False,
+            }
+            response = await client.post("/api/jobs/batch", json=payload)
+            assert response.status_code == 201
+            data = response.json()
+            assert data["total_submitted"] == 2
+            assert data["total_queued"] == 0
+            assert data["total_failed"] == 2
+            assert len(data["queued"]) == 0
+            assert len(data["failed"]) == 2
+            assert mock_enqueue.call_count == 0
+
+
+
+
 

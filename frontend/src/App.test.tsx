@@ -117,7 +117,7 @@ describe('App Walking Skeleton', () => {
       expect(screen.getByText('Rick Astley - Never Gonna Give You Up')).toBeInTheDocument()
     })
 
-    const downloadBtn = screen.getByRole('button', { name: /download/i })
+    const downloadBtn = screen.getByRole('button', { name: /^download$/i })
     fireEvent.click(downloadBtn)
 
     await waitFor(() => {
@@ -214,7 +214,7 @@ describe('App Walking Skeleton', () => {
     const qualitySelect = screen.getByLabelText(/quality/i)
     fireEvent.change(qualitySelect, { target: { value: '720p' } })
 
-    const downloadBtn = screen.getByRole('button', { name: /download/i })
+    const downloadBtn = screen.getByRole('button', { name: /^download$/i })
     fireEvent.click(downloadBtn)
 
     await waitFor(() => {
@@ -280,7 +280,7 @@ describe('App Walking Skeleton', () => {
     const bitrateSelect = screen.getByLabelText(/bitrate|quality/i)
     fireEvent.change(bitrateSelect, { target: { value: '320k' } })
 
-    const downloadBtn = screen.getByRole('button', { name: /download/i })
+    const downloadBtn = screen.getByRole('button', { name: /^download$/i })
     fireEvent.click(downloadBtn)
 
     await waitFor(() => {
@@ -339,7 +339,7 @@ describe('App Walking Skeleton', () => {
       expect(screen.getByText('Rick Astley - Never Gonna Give You Up')).toBeInTheDocument()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /download/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^download$/i }))
 
     await waitFor(() => {
       expect(screen.getByText('PENDING')).toBeInTheDocument()
@@ -468,4 +468,102 @@ describe('App Walking Skeleton', () => {
       expect(clearCompletedCalled).toBe(true)
     })
   })
+
+  it('switches to Batch Download tab and shows inline validation for invalid URLs', async () => {
+    render(<App />)
+
+    const batchTabBtn = screen.getByRole('button', { name: /batch download/i })
+    fireEvent.click(batchTabBtn)
+
+    const textarea = screen.getByPlaceholderText(/paste youtube urls/i)
+    expect(textarea).toBeInTheDocument()
+
+    fireEvent.change(textarea, {
+      target: {
+        value: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ\nhttps://example.com/invalid-link',
+      },
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/line 2:/i)).toBeInTheDocument()
+      expect(screen.getByText(/invalid youtube url format/i)).toBeInTheDocument()
+    })
+  })
+
+  it('submits batch download with unified format selection and shows summary', async () => {
+    let batchPayload: any = null
+    const mockBatchResponse = {
+      queued: [
+        {
+          id: 'batch-job-1',
+          url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+          title: null,
+          uploader: null,
+          duration_s: null,
+          thumbnail: null,
+          format: 'mp4',
+          quality: '720p',
+          audio_only: false,
+          state: 'PENDING',
+          progress: 0.0,
+          error: null,
+          output_path: null,
+        },
+      ],
+      failed: [{ url: 'not-valid', error: 'Invalid YouTube URL format' }],
+      total_submitted: 2,
+      total_queued: 1,
+      total_failed: 1,
+    }
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, opts) => {
+      const urlStr = url.toString()
+      if (urlStr.includes('/api/jobs/batch') && opts?.method === 'POST') {
+        batchPayload = JSON.parse(opts.body as string)
+        return {
+          ok: true,
+          json: async () => mockBatchResponse,
+        } as Response
+      }
+      return { ok: true, json: async () => ({}) } as Response
+    })
+
+    render(<App />)
+
+    // Switch to Batch tab
+    fireEvent.click(screen.getByRole('button', { name: /batch download/i }))
+
+    const textarea = screen.getByPlaceholderText(/paste youtube urls/i)
+    fireEvent.change(textarea, {
+      target: {
+        value: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ\nnot-valid',
+      },
+    })
+
+    // Select 720p quality
+    const qualitySelect = screen.getByLabelText(/quality/i)
+    fireEvent.change(qualitySelect, { target: { value: '720p' } })
+
+    const queueBatchBtn = screen.getByRole('button', { name: /queue batch/i })
+    fireEvent.click(queueBatchBtn)
+
+    await waitFor(() => {
+      expect(batchPayload).not.toBeNull()
+    })
+
+    expect(batchPayload.urls).toEqual([
+      'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      'not-valid',
+    ])
+    expect(batchPayload.quality).toBe('720p')
+    expect(batchPayload.format).toBe('mp4')
+    expect(batchPayload.audio_only).toBe(false)
+
+    // Verify batch queued job appears in queue list
+    await waitFor(() => {
+      expect(screen.getByText('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBeInTheDocument()
+      expect(screen.getByText(/queued 1 job/i)).toBeInTheDocument()
+    })
+  })
 })
+

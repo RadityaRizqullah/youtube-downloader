@@ -12,7 +12,15 @@ from youtube_downloader.database import get_db, init_db
 from youtube_downloader.extractor import check_ffmpeg, extract_video_info, is_valid_youtube_url
 from youtube_downloader.models import DownloadJob, JobState
 from youtube_downloader.queue import QueueManager
-from youtube_downloader.schemas import DownloadJobCreate, DownloadJobRead, HealthResponse, VideoMetadata
+from youtube_downloader.schemas import (
+    BatchDownloadError,
+    BatchDownloadRequest,
+    BatchDownloadResponse,
+    DownloadJobCreate,
+    DownloadJobRead,
+    HealthResponse,
+    VideoMetadata,
+)
 from youtube_downloader.ws import manager
 
 queue_manager = QueueManager()
@@ -76,6 +84,49 @@ async def create_job(payload: DownloadJobCreate, db: Session = Depends(get_db)):
     await queue_manager.enqueue(str(job.id))
 
     return job
+
+
+# ponytail: sequential enqueue loop; upgrade to batch job dispatch if queue throughput bottlenecks
+@app.post("/api/jobs/batch", response_model=BatchDownloadResponse, status_code=status.HTTP_201_CREATED)
+async def create_batch_jobs(payload: BatchDownloadRequest, db: Session = Depends(get_db)):
+    queued_jobs: list[DownloadJob] = []
+    failed: list[BatchDownloadError] = []
+    total_submitted = 0
+
+    for raw_url in payload.urls:
+        url = raw_url.strip()
+        if not url:
+            continue
+        total_submitted += 1
+        if not is_valid_youtube_url(url):
+            failed.append(BatchDownloadError(url=url, error="Invalid YouTube URL format"))
+            continue
+
+        job = DownloadJob(
+            url=url,
+            format=payload.format,
+            quality=payload.quality,
+            audio_only=payload.audio_only,
+            state=JobState.PENDING.value,
+            progress=0.0,
+        )
+        db.add(job)
+        queued_jobs.append(job)
+
+    db.commit()
+
+    for job in queued_jobs:
+        db.refresh(job)
+        await queue_manager.enqueue(str(job.id))
+
+    return BatchDownloadResponse(
+        queued=[DownloadJobRead.model_validate(j) for j in queued_jobs],
+        failed=failed,
+        total_submitted=total_submitted,
+        total_queued=len(queued_jobs),
+        total_failed=len(failed),
+    )
+
 
 
 @app.post("/api/jobs/{job_id}/cancel", response_model=DownloadJobRead)
