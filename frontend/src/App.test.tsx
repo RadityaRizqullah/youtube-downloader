@@ -1,0 +1,165 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import App from './App'
+
+describe('App Walking Skeleton', () => {
+  let mockWebSocket: any
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+
+    class MockWS {
+      static instances: MockWS[] = []
+      onmessage: ((event: any) => void) | null = null
+      close = vi.fn()
+      constructor() {
+        MockWS.instances.push(this)
+        mockWebSocket = this
+      }
+    }
+    vi.stubGlobal('WebSocket', MockWS)
+  })
+
+  it('shows inline validation error for invalid URL', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    render(<App />)
+
+    const input = screen.getByPlaceholderText(/paste youtube video url/i)
+    fireEvent.change(input, { target: { value: 'https://not-youtube.com/abc' } })
+    fireEvent.blur(input)
+
+    expect(screen.getByText(/valid youtube video url/i)).toBeInTheDocument()
+    const infoCalls = fetchSpy.mock.calls.filter(([url]) => url.toString().includes('/api/info'))
+    expect(infoCalls).toHaveLength(0)
+  })
+
+  it('fetches metadata and renders preview card for valid URL', async () => {
+    const mockMeta = {
+      url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      title: 'Rick Astley - Never Gonna Give You Up',
+      uploader: 'Rick Astley',
+      duration_s: 213,
+      thumbnail: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+    }
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const urlStr = url.toString()
+      if (urlStr.includes('/api/health')) {
+        return { ok: true, json: async () => ({ ffmpeg: true, version: '0.1.0' }) } as Response
+      }
+      if (urlStr.includes('/api/info')) {
+        return { ok: true, json: async () => mockMeta } as Response
+      }
+      return { ok: true, json: async () => ({}) } as Response
+    })
+
+    render(<App />)
+
+    const input = screen.getByPlaceholderText(/paste youtube video url/i)
+    fireEvent.change(input, { target: { value: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' } })
+
+    const previewBtn = screen.getByRole('button', { name: /preview/i })
+    fireEvent.click(previewBtn)
+
+    await waitFor(() => {
+      expect(screen.getByText('Rick Astley - Never Gonna Give You Up')).toBeInTheDocument()
+    })
+
+    expect(screen.getByText('Rick Astley', { selector: 'p' })).toBeInTheDocument()
+    expect(screen.getByText('03:33')).toBeInTheDocument()
+    const img = screen.getByAltText(/video thumbnail/i)
+    expect(img).toHaveAttribute('src', mockMeta.thumbnail)
+  })
+
+  it('clicking download initiates DownloadJob and reflects WebSocket progress to DONE', async () => {
+    const mockMeta = {
+      url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      title: 'Rick Astley - Never Gonna Give You Up',
+      uploader: 'Rick Astley',
+      duration_s: 213,
+      thumbnail: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+    }
+
+    const mockJob = {
+      id: 'job-xyz-123',
+      url: mockMeta.url,
+      title: mockMeta.title,
+      uploader: mockMeta.uploader,
+      duration_s: mockMeta.duration_s,
+      thumbnail: mockMeta.thumbnail,
+      format: 'mp4',
+      quality: 'best',
+      audio_only: false,
+      state: 'PENDING',
+      progress: 0.0,
+      error: null,
+      output_path: null,
+    }
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, opts) => {
+      const urlStr = url.toString()
+      if (urlStr.includes('/api/info')) {
+        return { ok: true, json: async () => mockMeta } as Response
+      }
+      if (urlStr.includes('/api/jobs') && opts?.method === 'POST') {
+        return { ok: true, json: async () => mockJob } as Response
+      }
+      return { ok: true, json: async () => ({}) } as Response
+    })
+
+    render(<App />)
+
+    const input = screen.getByPlaceholderText(/paste youtube video url/i)
+    fireEvent.change(input, { target: { value: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' } })
+    fireEvent.click(screen.getByRole('button', { name: /preview/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Rick Astley - Never Gonna Give You Up')).toBeInTheDocument()
+    })
+
+    const downloadBtn = screen.getByRole('button', { name: /download/i })
+    fireEvent.click(downloadBtn)
+
+    await waitFor(() => {
+      expect(screen.getByText('PENDING')).toBeInTheDocument()
+    })
+
+    // Simulate WebSocket progress update
+    act(() => {
+      mockWebSocket.onmessage?.({
+        data: JSON.stringify({
+          id: 'job-xyz-123',
+          state: 'DOWNLOADING',
+          progress: 65.5,
+          error: null,
+          output_path: null,
+        }),
+      })
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText('DOWNLOADING')).toBeInTheDocument()
+      expect(screen.getByText('65.5%')).toBeInTheDocument()
+    })
+
+    // Simulate WebSocket completion
+    act(() => {
+      mockWebSocket.onmessage?.({
+        data: JSON.stringify({
+          id: 'job-xyz-123',
+          state: 'DONE',
+          progress: 100.0,
+          error: null,
+          output_path: 'C:/Users/Raditya/Downloads/youtube-downloader/Rick Astley.mp4',
+        }),
+      })
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText('DONE')).toBeInTheDocument()
+      expect(screen.getByText('100.0%')).toBeInTheDocument()
+      expect(screen.getByText(/download complete!/i)).toBeInTheDocument()
+      expect(screen.getByText(/Rick Astley\.mp4/)).toBeInTheDocument()
+    })
+  })
+})
