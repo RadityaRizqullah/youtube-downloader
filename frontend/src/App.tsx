@@ -8,6 +8,7 @@ interface VideoMetadata {
   uploader: string
   duration_s: number
   thumbnail: string
+  available_qualities?: string[]
 }
 
 interface DownloadJob {
@@ -36,6 +37,13 @@ export default function App() {
   const [activeJob, setActiveJob] = useState<DownloadJob | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [ffmpegInstalled, setFfmpegInstalled] = useState<boolean | null>(null)
+
+  // Quality & Format selections
+  const [audioOnly, setAudioOnly] = useState(false)
+  const [videoFormat, setVideoFormat] = useState('mp4')
+  const [videoQuality, setVideoQuality] = useState('best')
+  const [audioFormat, setAudioFormat] = useState('mp3')
+  const [audioBitrate, setAudioBitrate] = useState('best')
 
   const wsRef = useRef<WebSocket | null>(null)
 
@@ -136,6 +144,8 @@ export default function App() {
   const handleDownload = async () => {
     if (!metadata) return
     setIsSubmitting(true)
+    const chosenFormat = audioOnly ? audioFormat : videoFormat
+    const chosenQuality = audioOnly ? audioBitrate : videoQuality
     try {
       const payload = {
         url: metadata.url,
@@ -143,9 +153,9 @@ export default function App() {
         uploader: metadata.uploader,
         duration_s: metadata.duration_s,
         thumbnail: metadata.thumbnail,
-        format: 'mp4',
-        quality: 'best',
-        audio_only: false,
+        format: chosenFormat,
+        quality: chosenQuality,
+        audio_only: audioOnly,
       }
       const res = await fetch('/api/jobs', {
         method: 'POST',
@@ -167,9 +177,9 @@ export default function App() {
         uploader: metadata.uploader,
         duration_s: metadata.duration_s,
         thumbnail: metadata.thumbnail,
-        format: 'mp4',
-        quality: 'best',
-        audio_only: false,
+        format: chosenFormat,
+        quality: chosenQuality,
+        audio_only: audioOnly,
         state: 'FAILED',
         progress: 0,
         error: message,
@@ -282,10 +292,121 @@ export default function App() {
                   </h2>
                   <p className="text-xs text-slate-400 mt-1">{metadata.uploader}</p>
                 </div>
+
+                {/* Video / Audio toggle & format options */}
+                <div className="space-y-2 pt-1 border-t border-slate-700/60">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-400 font-medium">Download Type:</span>
+                    <div className="flex rounded-lg bg-slate-900/60 p-0.5 border border-slate-700/60">
+                      <button
+                        type="button"
+                        onClick={() => setAudioOnly(false)}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition cursor-pointer ${
+                          !audioOnly
+                            ? 'bg-rose-600 text-white shadow'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Video
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAudioOnly(true)}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition cursor-pointer ${
+                          audioOnly
+                            ? 'bg-rose-600 text-white shadow'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Audio Only
+                      </button>
+                    </div>
+                  </div>
+
+                  {!audioOnly ? (
+                    <div className="grid grid-cols-2 gap-3 pt-1">
+                      <div>
+                        <label htmlFor="video-format" className="block text-xs font-medium text-slate-300 mb-1">
+                          Format
+                        </label>
+                        <select
+                          id="video-format"
+                          value={videoFormat}
+                          onChange={(e) => setVideoFormat(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+                        >
+                          <option value="mp4">MP4</option>
+                          <option value="webm">WebM</option>
+                          <option value="mkv">MKV</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor="video-quality" className="block text-xs font-medium text-slate-300 mb-1">
+                          Quality
+                        </label>
+                        <select
+                          id="video-quality"
+                          value={videoQuality}
+                          onChange={(e) => setVideoQuality(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+                        >
+                          <option value="best">Best Quality</option>
+                          <option value="1080p">
+                            1080p {metadata.available_qualities && !metadata.available_qualities.includes('1080p') ? '(unavailable)' : ''}
+                          </option>
+                          <option value="720p">
+                            720p {metadata.available_qualities && !metadata.available_qualities.includes('720p') ? '(unavailable)' : ''}
+                          </option>
+                          <option value="480p">
+                            480p {metadata.available_qualities && !metadata.available_qualities.includes('480p') ? '(unavailable)' : ''}
+                          </option>
+                          <option value="360p">
+                            360p {metadata.available_qualities && !metadata.available_qualities.includes('360p') ? '(unavailable)' : ''}
+                          </option>
+                        </select>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3 pt-1">
+                      <div>
+                        <label htmlFor="audio-format" className="block text-xs font-medium text-slate-300 mb-1">
+                          Format
+                        </label>
+                        <select
+                          id="audio-format"
+                          value={audioFormat}
+                          onChange={(e) => setAudioFormat(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+                        >
+                          <option value="mp3">MP3</option>
+                          <option value="m4a">M4A</option>
+                          <option value="opus">Opus</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor="audio-bitrate" className="block text-xs font-medium text-slate-300 mb-1">
+                          Bitrate
+                        </label>
+                        <select
+                          id="audio-bitrate"
+                          value={audioBitrate}
+                          onChange={(e) => setAudioBitrate(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+                        >
+                          <option value="best">Best Quality</option>
+                          <option value="320k">320 kbps</option>
+                          <option value="192k">192 kbps</option>
+                          <option value="128k">128 kbps</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div className="pt-2 flex justify-end">
                   <button
                     onClick={handleDownload}
-                    disabled={isSubmitting || activeJob?.state === 'DOWNLOADING'}
+                    disabled={isSubmitting || activeJob?.state === 'DOWNLOADING' || activeJob?.state === 'MERGING'}
                     className="inline-flex items-center gap-2 px-5 py-2.5 bg-rose-600 hover:bg-rose-500 active:bg-rose-700 disabled:opacity-50 rounded-lg font-medium text-sm text-white transition shadow-md cursor-pointer"
                   >
                     {isSubmitting ? (
@@ -319,6 +440,8 @@ export default function App() {
                     ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                     : activeJob.state === 'FAILED'
                     ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                    : activeJob.state === 'MERGING'
+                    ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
                     : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
                 }`}
               >
@@ -339,12 +462,22 @@ export default function App() {
                       ? 'bg-emerald-500'
                       : activeJob.state === 'FAILED'
                       ? 'bg-rose-500'
+                      : activeJob.state === 'MERGING'
+                      ? 'bg-purple-500'
                       : 'bg-rose-600'
                   }`}
                   style={{ width: `${Math.min(100, Math.max(0, activeJob.progress))}%` }}
                 />
               </div>
             </div>
+
+            {/* Merging message */}
+            {activeJob.state === 'MERGING' && (
+              <p className="text-xs text-purple-300 flex items-center gap-1.5">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Processing audio/video streams with FFmpeg...
+              </p>
+            )}
 
             {/* Completion message */}
             {activeJob.state === 'DONE' && (

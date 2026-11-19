@@ -20,6 +20,35 @@ def get_default_output_folder() -> Path:
         db.close()
 
 
+def build_ydl_opts(job: DownloadJob, outtmpl: str | None = None) -> dict[str, Any]:
+    opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+    }
+    if outtmpl:
+        opts["outtmpl"] = outtmpl
+
+    if job.audio_only:
+        opts["format"] = "bestaudio/best"
+        codec = job.format if job.format in ("mp3", "m4a", "opus") else "mp3"
+        quality_str = "0" if job.quality == "best" else job.quality.rstrip("k")
+        opts["postprocessors"] = [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": codec,
+            "preferredquality": quality_str,
+        }]
+    else:
+        container = job.format if job.format in ("mp4", "webm", "mkv") else "mp4"
+        opts["merge_output_format"] = container
+        if job.quality == "best" or not job.quality:
+            opts["format"] = "bestvideo+bestaudio/best"
+        else:
+            height = job.quality.rstrip("p")
+            opts["format"] = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+
+    return opts
+
+
 def run_download_job(job_id: str, loop: asyncio.AbstractEventLoop) -> None:
     db = SessionLocal()
     job: DownloadJob | None = None
@@ -72,23 +101,31 @@ def run_download_job(job_id: str, loop: asyncio.AbstractEventLoop) -> None:
                 if filename:
                     final_path.append(filename)
 
-        ydl_opts: dict[str, Any] = {
-            "outtmpl": template,
-            "progress_hooks": [progress_hook],
-            "quiet": True,
-            "no_warnings": True,
-        }
+        def postprocessor_hook(d: dict[str, Any]) -> None:
+            if not job:
+                return
+            status = d.get("status")
+            if status == "started":
+                job.state = JobState.MERGING.value
+                db.commit()
+                asyncio.run_coroutine_threadsafe(
+                    manager.broadcast({
+                        "id": job.id,
+                        "state": JobState.MERGING.value,
+                        "progress": job.progress,
+                        "error": None,
+                        "output_path": None,
+                    }),
+                    loop,
+                )
+            elif status == "finished":
+                filename = d.get("filepath") or d.get("filename")
+                if filename:
+                    final_path.append(filename)
 
-        # Format handling: default video format mp4
-        if job.audio_only:
-            ydl_opts["format"] = "bestaudio/best"
-            ydl_opts["postprocessors"] = [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": job.format or "mp3",
-                "preferredquality": "192",
-            }]
-        else:
-            ydl_opts["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+        ydl_opts = build_ydl_opts(job, outtmpl=template)
+        ydl_opts.setdefault("progress_hooks", []).append(progress_hook)
+        ydl_opts.setdefault("postprocessor_hooks", []).append(postprocessor_hook)
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(job.url, download=True)
@@ -105,7 +142,7 @@ def run_download_job(job_id: str, loop: asyncio.AbstractEventLoop) -> None:
 
                 out_file = None
                 if final_path:
-                    out_file = final_path[0]
+                    out_file = final_path[-1]
                 elif "_filename" in info:
                     out_file = info["_filename"]
                 job.output_path = out_file

@@ -14,6 +14,7 @@ class VideoMetadata(BaseModel):
     uploader: str
     duration_s: int
     thumbnail: str
+    available_qualities: list[str] = []
 
 
 class DownloadJobCreate(BaseModel):
