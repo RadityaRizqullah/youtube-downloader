@@ -896,5 +896,157 @@ describe('App Walking Skeleton', () => {
       expect(screen.getByText(/output folder is not writable/i)).toBeInTheDocument()
     })
   })
+
+  it('toggles clip segment section and submits clip job with start_time_s and end_time_s', async () => {
+    let sentPayload: any = null
+    const mockMeta = {
+      url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      title: 'Rick Astley - Never Gonna Give You Up',
+      uploader: 'Rick Astley',
+      duration_s: 213,
+      thumbnail: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+      available_qualities: ['1080p'],
+    }
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, opts) => {
+      const urlStr = url.toString()
+      if (urlStr.includes('/api/health')) {
+        return { ok: true, json: async () => ({ ffmpeg: true, version: '0.1.0' }) } as Response
+      }
+      if (urlStr.includes('/api/info')) {
+        return { ok: true, json: async () => mockMeta } as Response
+      }
+      if (urlStr.includes('/api/jobs') && opts?.method === 'POST') {
+        sentPayload = JSON.parse(opts.body as string)
+        return {
+          ok: true,
+          json: async () => ({
+            id: 'job-clip-1',
+            ...sentPayload,
+            state: 'PENDING',
+            progress: 0,
+            error: null,
+            output_path: null,
+          }),
+        } as Response
+      }
+      return { ok: true, json: async () => ({}) } as Response
+    })
+
+    render(<App />)
+
+    const input = screen.getByPlaceholderText(/paste youtube video url/i)
+    fireEvent.change(input, { target: { value: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' } })
+    fireEvent.click(screen.getByRole('button', { name: /preview/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Rick Astley - Never Gonna Give You Up')).toBeInTheDocument()
+    })
+
+    // Find and toggle the clip segment switch
+    const clipSwitch = screen.getByRole('switch', { name: /clip segment/i })
+    expect(clipSwitch).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(clipSwitch)
+    expect(clipSwitch).toHaveAttribute('aria-checked', 'true')
+
+    // Embedded iframe and time inputs should appear
+    expect(screen.getByTitle(/youtube video preview/i)).toBeInTheDocument()
+    const startInput = screen.getByLabelText(/start time/i)
+    const endInput = screen.getByLabelText(/end time/i)
+    expect(startInput).toHaveValue('00:00')
+    expect(endInput).toHaveValue('03:33')
+
+    // Change timestamps
+    fireEvent.change(startInput, { target: { value: '00:15' } })
+    fireEvent.change(endInput, { target: { value: '01:00' } })
+
+    const downloadBtn = screen.getByRole('button', { name: /^download$/i })
+    fireEvent.click(downloadBtn)
+
+    await waitFor(() => {
+      expect(sentPayload).not.toBeNull()
+    })
+
+    expect(sentPayload.start_time_s).toBe(15)
+    expect(sentPayload.end_time_s).toBe(60)
+  })
+
+  it('disables clip toggle when ffmpeg is not installed', async () => {
+    const mockMeta = {
+      url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      title: 'Rick Astley - Never Gonna Give You Up',
+      uploader: 'Rick Astley',
+      duration_s: 213,
+      thumbnail: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+    }
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const urlStr = url.toString()
+      if (urlStr.includes('/api/health')) {
+        return { ok: true, json: async () => ({ ffmpeg: false, version: '0.1.0' }) } as Response
+      }
+      if (urlStr.includes('/api/info')) {
+        return { ok: true, json: async () => mockMeta } as Response
+      }
+      return { ok: true, json: async () => ({}) } as Response
+    })
+
+    render(<App />)
+
+    const input = screen.getByPlaceholderText(/paste youtube video url/i)
+    fireEvent.change(input, { target: { value: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' } })
+    fireEvent.click(screen.getByRole('button', { name: /preview/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Rick Astley - Never Gonna Give You Up')).toBeInTheDocument()
+    })
+
+    const clipSwitch = screen.getByRole('switch', { name: /clip segment/i })
+    expect(clipSwitch).toBeDisabled()
+    expect(screen.getByText(/requires ffmpeg/i)).toBeInTheDocument()
+  })
+
+  it('shows error when clip timestamps are invalid', async () => {
+    const mockMeta = {
+      url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      title: 'Rick Astley - Never Gonna Give You Up',
+      uploader: 'Rick Astley',
+      duration_s: 213,
+      thumbnail: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+    }
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const urlStr = url.toString()
+      if (urlStr.includes('/api/health')) {
+        return { ok: true, json: async () => ({ ffmpeg: true, version: '0.1.0' }) } as Response
+      }
+      if (urlStr.includes('/api/info')) {
+        return { ok: true, json: async () => mockMeta } as Response
+      }
+      return { ok: true, json: async () => ({}) } as Response
+    })
+
+    render(<App />)
+
+    const input = screen.getByPlaceholderText(/paste youtube video url/i)
+    fireEvent.change(input, { target: { value: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' } })
+    fireEvent.click(screen.getByRole('button', { name: /preview/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Rick Astley - Never Gonna Give You Up')).toBeInTheDocument()
+    })
+
+    const clipSwitch = screen.getByRole('switch', { name: /clip segment/i })
+    fireEvent.click(clipSwitch)
+
+    const startInput = screen.getByLabelText(/start time/i)
+    const endInput = screen.getByLabelText(/end time/i)
+
+    // Set end earlier than start
+    fireEvent.change(startInput, { target: { value: '01:00' } })
+    fireEvent.change(endInput, { target: { value: '00:30' } })
+
+    expect(screen.getByText(/end time must be after start time/i)).toBeInTheDocument()
+  })
 })
 

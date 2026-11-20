@@ -448,6 +448,88 @@ async def test_update_settings_rejects_invalid_filename_template():
         assert "absolute" in res.json()["detail"]
 
 
+@pytest.mark.asyncio
+async def test_create_clip_download_job():
+    with patch("youtube_downloader.main.queue_manager.enqueue"), patch("youtube_downloader.main.check_ffmpeg", return_value=True):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            payload = {
+                "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "title": "Never Gonna Give You Up Clip",
+                "duration_s": 213,
+                "start_time_s": 10,
+                "end_time_s": 30,
+            }
+            res = await client.post("/api/jobs", json=payload)
+            assert res.status_code == 201
+            data = res.json()
+            assert data["start_time_s"] == 10
+            assert data["end_time_s"] == 30
+
+
+@pytest.mark.asyncio
+async def test_create_clip_download_job_validations():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Missing one timestamp
+        res = await client.post(
+            "/api/jobs",
+            json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "start_time_s": 10},
+        )
+        assert res.status_code == 400
+        assert "Both start_time_s and end_time_s are required" in res.json()["detail"]
+
+        # Missing ffmpeg
+        with patch("youtube_downloader.main.check_ffmpeg", return_value=False):
+            res = await client.post(
+                "/api/jobs",
+                json={
+                    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "start_time_s": 10,
+                    "end_time_s": 20,
+                },
+            )
+            assert res.status_code == 400
+            assert "FFmpeg is required" in res.json()["detail"]
+
+        with patch("youtube_downloader.main.check_ffmpeg", return_value=True):
+            # Negative start time
+            res = await client.post(
+                "/api/jobs",
+                json={
+                    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "start_time_s": -5,
+                    "end_time_s": 20,
+                },
+            )
+            assert res.status_code == 400
+            assert "non-negative" in res.json()["detail"]
+
+            # End time <= start time or duration < 1s
+            res = await client.post(
+                "/api/jobs",
+                json={
+                    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "start_time_s": 20,
+                    "end_time_s": 20,
+                },
+            )
+            assert res.status_code == 400
+            assert "at least 1 second" in res.json()["detail"]
+
+            # End time exceeds duration
+            res = await client.post(
+                "/api/jobs",
+                json={
+                    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "duration_s": 60,
+                    "start_time_s": 10,
+                    "end_time_s": 75,
+                },
+            )
+            assert res.status_code == 400
+            assert "cannot exceed video duration" in res.json()["detail"]
+
+
+
 
 
 

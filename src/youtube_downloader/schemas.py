@@ -35,6 +35,8 @@ class DownloadJobCreate(BaseModel):
     format: str = "mp4"
     quality: str = "best"
     audio_only: bool = False
+    start_time_s: Optional[int] = None
+    end_time_s: Optional[int] = None
 
 
 class DownloadJobRead(BaseModel):
@@ -49,6 +51,8 @@ class DownloadJobRead(BaseModel):
     format: str
     quality: str
     audio_only: bool
+    start_time_s: Optional[int] = None
+    end_time_s: Optional[int] = None
     state: str
     progress: float
     error: Optional[str] = None
@@ -126,6 +130,8 @@ class SettingsRead(BaseModel):
     default_quality: str = "best"
     default_audio_format: str = "mp3"
     default_audio_quality: str = "best"
+    cookies_from_browser: Optional[str] = None
+    cookies_file: Optional[str] = None
 
 
 class SettingsUpdate(BaseModel):
@@ -136,4 +142,6 @@ class SettingsUpdate(BaseModel):
     default_quality: Optional[str] = None
     default_audio_format: Optional[str] = None
     default_audio_quality: Optional[str] = None
+    cookies_from_browser: Optional[str] = None
+    cookies_file: Optional[str] = None
 

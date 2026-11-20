@@ -72,6 +72,7 @@ VALID_VIDEO_FORMATS = {"mp4", "webm", "mkv"}
 VALID_VIDEO_QUALITIES = {"best", "1080p", "720p", "480p", "360p"}
 VALID_AUDIO_FORMATS = {"mp3", "m4a", "opus"}
 VALID_AUDIO_QUALITIES = {"best", "320k", "192k", "128k"}
+VALID_BROWSERS = {"chrome", "firefox", "edge", "safari", "opera", "brave", "chromium", "vivaldi"}
 
 
 @app.get("/api/settings", response_model=SettingsRead)
@@ -175,6 +176,23 @@ async def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)
             )
         settings.default_audio_quality = payload.default_audio_quality
 
+    if payload.cookies_from_browser is not None:
+        browser = payload.cookies_from_browser.strip().lower() if payload.cookies_from_browser.strip() else None
+        if browser is not None and browser not in VALID_BROWSERS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid browser. Allowed: {sorted(VALID_BROWSERS)}",
+            )
+        settings.cookies_from_browser = browser or None
+
+    if payload.cookies_file is not None:
+        cf = payload.cookies_file.strip() or None
+        if cf is not None:
+            cf_path = Path(cf).expanduser()
+            if not cf_path.is_file():
+                raise HTTPException(status_code=400, detail=f"cookies.txt not found: {cf}")
+        settings.cookies_file = str(Path(cf).expanduser()) if cf else None
+
     db.commit()
     db.refresh(settings)
     return settings
@@ -185,16 +203,20 @@ async def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)
 async def get_info(
     url: str = Query(..., description="YouTube video or playlist URL"),
     playlist: Optional[bool] = Query(None, description="Force playlist extraction if URL contains a playlist"),
+    db: Session = Depends(get_db),
 ):
     if not is_valid_youtube_url(url):
         raise HTTPException(status_code=400, detail="Invalid YouTube URL format")
+    settings = db.query(Settings).first()
+    cookies_from_browser = settings.cookies_from_browser if settings else None
+    cookies_file = settings.cookies_file if settings else None
     try:
         is_pl = is_playlist_url(url) if playlist is None else (playlist or is_playlist_url(url))
         if is_pl:
-            data = await asyncio.to_thread(extract_playlist_info, url)
+            data = await asyncio.to_thread(extract_playlist_info, url, cookies_from_browser, cookies_file)
             return PlaylistMetadata(**data)
         else:
-            data = await asyncio.to_thread(extract_video_info, url)
+            data = await asyncio.to_thread(extract_video_info, url, cookies_from_browser, cookies_file)
             return VideoMetadata(**data)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Failed to extract info: {exc}")
@@ -206,6 +228,33 @@ async def create_job(payload: DownloadJobCreate, db: Session = Depends(get_db)):
     if not is_valid_youtube_url(payload.url):
         raise HTTPException(status_code=400, detail="Invalid YouTube URL format")
 
+    if payload.start_time_s is not None or payload.end_time_s is not None:
+        if payload.start_time_s is None or payload.end_time_s is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Both start_time_s and end_time_s are required for clip jobs",
+            )
+        if not check_ffmpeg():
+            raise HTTPException(
+                status_code=400,
+                detail="FFmpeg is required for clip downloads",
+            )
+        if payload.start_time_s < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="start_time_s must be non-negative",
+            )
+        if payload.end_time_s - payload.start_time_s < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Clip duration must be at least 1 second (end_time_s > start_time_s)",
+            )
+        if payload.duration_s is not None and payload.end_time_s > payload.duration_s:
+            raise HTTPException(
+                status_code=400,
+                detail="end_time_s cannot exceed video duration",
+            )
+
     job = DownloadJob(
         url=payload.url,
         title=payload.title,
@@ -215,6 +264,8 @@ async def create_job(payload: DownloadJobCreate, db: Session = Depends(get_db)):
         format=payload.format,
         quality=payload.quality,
         audio_only=payload.audio_only,
+        start_time_s=payload.start_time_s,
+        end_time_s=payload.end_time_s,
         state=JobState.PENDING.value,
         progress=0.0,
     )

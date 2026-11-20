@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { isValidYouTubeUrl, isPlaylistUrl, formatDuration, validateBatchUrls } from './utils'
+import {
+  isValidYouTubeUrl,
+  isPlaylistUrl,
+  formatDuration,
+  validateBatchUrls,
+  extractVideoId,
+  formatTimestamp,
+  parseTimestamp,
+} from './utils'
 
 describe('isValidYouTubeUrl', () => {
   it('accepts standard youtube watch url', () => {
@@ -45,6 +53,53 @@ describe('formatDuration', () => {
     expect(formatDuration(65)).toBe('01:05')
     expect(formatDuration(213)).toBe('03:33')
     expect(formatDuration(3600)).toBe('60:00')
+  })
+})
+
+describe('extractVideoId', () => {
+  it('extracts 11-char ID from watch url', () => {
+    expect(extractVideoId('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ')
+  })
+
+  it('extracts ID from youtu.be url', () => {
+    expect(extractVideoId('https://youtu.be/dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ')
+  })
+
+  it('extracts ID from shorts url', () => {
+    expect(extractVideoId('https://www.youtube.com/shorts/dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ')
+  })
+
+  it('returns null for non-video or invalid url', () => {
+    expect(extractVideoId('https://example.com/video')).toBeNull()
+    expect(extractVideoId('not-a-url')).toBeNull()
+  })
+})
+
+describe('formatTimestamp', () => {
+  it('formats MM:SS under an hour', () => {
+    expect(formatTimestamp(0)).toBe('00:00')
+    expect(formatTimestamp(65)).toBe('01:05')
+    expect(formatTimestamp(213)).toBe('03:33')
+  })
+
+  it('formats HH:MM:SS over an hour', () => {
+    expect(formatTimestamp(3600)).toBe('01:00:00')
+    expect(formatTimestamp(3665)).toBe('01:01:05')
+  })
+})
+
+describe('parseTimestamp', () => {
+  it('parses seconds, MM:SS, and HH:MM:SS', () => {
+    expect(parseTimestamp('45')).toBe(45)
+    expect(parseTimestamp('01:30')).toBe(90)
+    expect(parseTimestamp('1:05:20')).toBe(3920)
+  })
+
+  it('returns null for invalid inputs', () => {
+    expect(parseTimestamp('')).toBeNull()
+    expect(parseTimestamp('abc')).toBeNull()
+    expect(parseTimestamp('01:65')).toBeNull()
+    expect(parseTimestamp('-10')).toBeNull()
   })
 })
 

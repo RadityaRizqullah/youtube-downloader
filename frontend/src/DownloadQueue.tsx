@@ -1,5 +1,5 @@
-import { AlertCircle, CheckCircle2, Film, RotateCcw, Trash2, XCircle } from 'lucide-react'
-import { formatDuration } from './utils'
+import { AlertCircle, CheckCircle2, Film, RotateCcw, Scissors, Trash2, XCircle } from 'lucide-react'
+import { formatDuration, formatTimestamp } from './utils'
 
 export type JobState =
   | 'PENDING'
@@ -20,6 +20,8 @@ export interface DownloadJob {
   format: string
   quality: string
   audio_only: boolean
+  start_time_s?: number | null
+  end_time_s?: number | null
   state: JobState
   progress: number
   error: string | null
@@ -147,12 +149,21 @@ export function DownloadQueue({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 mt-1 text-xs text-slate-400">
+                  <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-slate-400">
                     {job.uploader && <span className="truncate max-w-[140px]">{job.uploader}</span>}
                     {job.uploader && <span>•</span>}
                     <span className="uppercase font-mono text-[11px] bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700/50">
                       {job.format} • {job.quality}
                     </span>
+                    {job.start_time_s !== null &&
+                      job.start_time_s !== undefined &&
+                      job.end_time_s !== null &&
+                      job.end_time_s !== undefined && (
+                        <span className="inline-flex items-center gap-1 font-mono text-[11px] bg-rose-950/70 text-rose-300 border border-rose-800/50 px-1.5 py-0.5 rounded">
+                          <Scissors className="w-3 h-3 text-rose-400" />
+                          {formatTimestamp(job.start_time_s)} - {formatTimestamp(job.end_time_s)}
+                        </span>
+                      )}
                   </div>
                 </div>
               </div>

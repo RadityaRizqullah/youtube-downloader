@@ -3,6 +3,7 @@ from pathlib import Path
 import threading
 from typing import Any
 import yt_dlp  # type: ignore[import-untyped]
+from yt_dlp.utils import download_range_func  # type: ignore[import-untyped]
 
 from sqlalchemy.orm import Session
 from youtube_downloader.database import SessionLocal
@@ -26,13 +27,31 @@ def get_default_output_folder(db: Session | None = None) -> Path:
             db.close()
 
 
-def build_ydl_opts(job: DownloadJob, outtmpl: str | None = None) -> dict[str, Any]:
+def format_seconds_tag(seconds: int) -> str:
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    if h > 0:
+        return f"{h:02d}-{m:02d}-{s:02d}"
+    return f"{m:02d}-{s:02d}"
+
+
+def build_ydl_opts(job: DownloadJob, outtmpl: str | None = None, cookies_from_browser: str | None = None, cookies_file: str | None = None) -> dict[str, Any]:
     opts: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
     }
     if outtmpl:
         opts["outtmpl"] = outtmpl
+
+    if cookies_file:
+        opts["cookiefile"] = cookies_file
+    elif cookies_from_browser:
+        opts["cookiesfrombrowser"] = (cookies_from_browser,)
+
+    if job.start_time_s is not None and job.end_time_s is not None:
+        opts["download_ranges"] = download_range_func(None, [(job.start_time_s, job.end_time_s)])
+        # ponytail: keyframe-copy trim (nearest keyframe); add force_keyframes_at_cuts=True only if frame-exact cuts are required (triggers full re-encode)
 
     if job.audio_only:
         opts["format"] = "bestaudio/best"
@@ -74,6 +93,8 @@ def run_download_job(
         settings = db.query(Settings).first()
         out_dir = get_default_output_folder(db)
         tmpl = settings.filename_template if settings and settings.filename_template else "%(title)s.%(ext)s"
+        cookies_from_browser = settings.cookies_from_browser if settings else None
+        cookies_file = settings.cookies_file if settings else None
         p_tmpl = Path(tmpl)
         if (
             tmpl.startswith(("/", "\\"))
@@ -82,6 +103,16 @@ def run_download_job(
             or ".." in p_tmpl.parts
         ):
             tmpl = "%(title)s.%(ext)s"
+
+        if job.start_time_s is not None and job.end_time_s is not None:
+            start_str = format_seconds_tag(job.start_time_s)
+            end_str = format_seconds_tag(job.end_time_s)
+            clip_suffix = f" [{start_str}_{end_str}]"
+            if ".%(ext)s" in tmpl:
+                tmpl = tmpl.replace(".%(ext)s", f"{clip_suffix}.%(ext)s")
+            else:
+                tmpl = f"{tmpl}{clip_suffix}"
+
         template = str(out_dir / tmpl)
 
         job.state = JobState.DOWNLOADING.value
@@ -152,7 +183,7 @@ def run_download_job(
                 if filename:
                     final_path.append(filename)
 
-        ydl_opts = build_ydl_opts(job, outtmpl=template)
+        ydl_opts = build_ydl_opts(job, outtmpl=template, cookies_from_browser=cookies_from_browser, cookies_file=cookies_file)
         ydl_opts.setdefault("progress_hooks", []).append(progress_hook)
         ydl_opts.setdefault("postprocessor_hooks", []).append(postprocessor_hook)
 

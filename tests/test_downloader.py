@@ -55,6 +55,26 @@ def test_build_ydl_opts_audio_only_best():
     assert pp["preferredquality"] == "0"
 
 
+def test_build_ydl_opts_clip_ranges():
+    job = DownloadJob(
+        format="mp4",
+        quality="best",
+        audio_only=False,
+        start_time_s=15,
+        end_time_s=45,
+    )
+    opts = build_ydl_opts(job)
+    assert "download_ranges" in opts
+    assert "force_keyframes_at_cuts" not in opts
+
+
+def test_format_seconds_tag():
+    from youtube_downloader.downloader import format_seconds_tag
+    assert format_seconds_tag(0) == "00-00"
+    assert format_seconds_tag(90) == "01-30"
+    assert format_seconds_tag(3665) == "01-01-05"
+
+
 def test_run_download_job_merging_state_broadcast():
     from unittest.mock import MagicMock, patch
     import asyncio

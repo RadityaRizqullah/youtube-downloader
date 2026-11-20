@@ -2,9 +2,17 @@
 
 ## DownloadJob
 
-A single unit of work: download one video at one quality/format combination to the configured output folder. Every DownloadJob is independently trackable, cancellable, and retryable.
+A single unit of work: download one video or ClipSegment at one quality/format combination to the configured output folder. Every DownloadJob is independently trackable, cancellable, and retryable.
 
 **Avoid:** "task", "item", "download" (too generic).
+
+---
+
+## ClipSegment
+
+A bounded time interval defined by start and end timestamps (in seconds) identifying a portion of a video to download instead of the full video.
+
+**Avoid:** "trim", "snip", "cut", "crop".
 
 ---
 

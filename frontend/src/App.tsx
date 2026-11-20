@@ -1,13 +1,25 @@
 import { useState, useEffect, useRef } from 'react'
-import { isValidYouTubeUrl, isPlaylistUrl, formatDuration, validateBatchUrls } from './utils'
+import {
+  isValidYouTubeUrl,
+  isPlaylistUrl,
+  formatDuration,
+  validateBatchUrls,
+  extractVideoId,
+  formatTimestamp,
+  parseTimestamp,
+} from './utils'
 import {
   AlertCircle,
   AlertTriangle,
   CheckCircle2,
+  Clock,
   Download,
   Eye,
   Film,
   Loader2,
+  Pause,
+  Play,
+  Scissors,
   Settings as SettingsIcon,
   X,
 } from 'lucide-react'
@@ -49,6 +61,16 @@ export default function App() {
   const [audioFormat, setAudioFormat] = useState('mp3')
   const [audioBitrate, setAudioBitrate] = useState('best')
 
+  // Clip state
+  const [clipEnabled, setClipEnabled] = useState(false)
+  const [clipStartSec, setClipStartSec] = useState(0)
+  const [clipEndSec, setClipEndSec] = useState(0)
+  const [clipStartStr, setClipStartStr] = useState('00:00')
+  const [clipEndStr, setClipEndStr] = useState('00:00')
+  const [clipError, setClipError] = useState('')
+  const [isPlayingClip, setIsPlayingClip] = useState(false)
+  const playerRef = useRef<any>(null)
+
   // Navigation mode
   const [activeTab, setActiveTab] = useState<'single' | 'batch' | 'playlist' | 'settings'>('single')
 
@@ -60,6 +82,8 @@ export default function App() {
   const [settingsVideoQuality, setSettingsVideoQuality] = useState('best')
   const [settingsAudioFormat, setSettingsAudioFormat] = useState('mp3')
   const [settingsAudioBitrate, setSettingsAudioBitrate] = useState('best')
+  const [cookiesFromBrowser, setCookiesFromBrowser] = useState('')
+  const [cookiesFile, setCookiesFile] = useState('')
   const [isSettingsSaving, setIsSettingsSaving] = useState(false)
   const [settingsSuccessMsg, setSettingsSuccessMsg] = useState('')
   const [settingsErrorMsg, setSettingsErrorMsg] = useState('')
@@ -136,6 +160,8 @@ export default function App() {
             setBatchAudioBitrate(data.default_audio_quality)
             setPlaylistAudioBitrate(data.default_audio_quality)
           }
+          setCookiesFromBrowser(data.cookies_from_browser ?? '')
+          setCookiesFile(data.cookies_file ?? '')
         }
       })
       .catch(() => {})
@@ -231,6 +257,13 @@ export default function App() {
       }
       const data: VideoMetadata = await res.json()
       setMetadata(data)
+      setClipEnabled(false)
+      setClipStartSec(0)
+      setClipStartStr('00:00')
+      const dur = data.duration_s || 60
+      setClipEndSec(dur)
+      setClipEndStr(formatTimestamp(dur))
+      setClipError('')
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Error fetching metadata'
       setExtractError(message)
@@ -239,13 +272,176 @@ export default function App() {
     }
   }
 
+  const validateClip = (start: number, end: number, duration: number): string => {
+    if (isNaN(start) || isNaN(end)) return 'Invalid timestamp format'
+    if (start < 0) return 'Start time cannot be negative'
+    if (end <= start) return 'End time must be after start time'
+    if (end - start < 1) return 'Clip must be at least 1 second'
+    if (duration > 0 && end > duration) return 'End time cannot exceed video duration'
+    return ''
+  }
+
+  const handleClipStartChange = (val: string) => {
+    setClipStartStr(val)
+    const parsed = parseTimestamp(val)
+    if (parsed !== null) {
+      setClipStartSec(parsed)
+      setClipError(validateClip(parsed, clipEndSec, metadata?.duration_s || 0))
+    } else {
+      setClipError('Invalid start time (use MM:SS or HH:MM:SS)')
+    }
+  }
+
+  const handleClipEndChange = (val: string) => {
+    setClipEndStr(val)
+    const parsed = parseTimestamp(val)
+    if (parsed !== null) {
+      setClipEndSec(parsed)
+      setClipError(validateClip(clipStartSec, parsed, metadata?.duration_s || 0))
+    } else {
+      setClipError('Invalid end time (use MM:SS or HH:MM:SS)')
+    }
+  }
+
+  const handleStartSliderChange = (sec: number) => {
+    setClipStartSec(sec)
+    setClipStartStr(formatTimestamp(sec))
+    setClipError(validateClip(sec, clipEndSec, metadata?.duration_s || 0))
+  }
+
+  const handleEndSliderChange = (sec: number) => {
+    setClipEndSec(sec)
+    setClipEndStr(formatTimestamp(sec))
+    setClipError(validateClip(clipStartSec, sec, metadata?.duration_s || 0))
+  }
+
+  const handleSetCurrentAsStart = () => {
+    if (playerRef.current && typeof playerRef.current.getCurrentTime === 'function') {
+      try {
+        const curr = Math.floor(playerRef.current.getCurrentTime())
+        handleStartSliderChange(curr)
+      } catch {}
+    }
+  }
+
+  const handleSetCurrentAsEnd = () => {
+    if (playerRef.current && typeof playerRef.current.getCurrentTime === 'function') {
+      try {
+        const curr = Math.ceil(playerRef.current.getCurrentTime())
+        handleEndSliderChange(curr)
+      } catch {}
+    }
+  }
+
+  const handlePreviewClip = () => {
+    if (isPlayingClip) {
+      if (playerRef.current?.pauseVideo) {
+        try {
+          playerRef.current.pauseVideo()
+        } catch {}
+      }
+      setIsPlayingClip(false)
+      return
+    }
+    if (playerRef.current?.seekTo && playerRef.current?.playVideo) {
+      try {
+        playerRef.current.seekTo(clipStartSec, true)
+        playerRef.current.playVideo()
+        setIsPlayingClip(true)
+      } catch {}
+    }
+  }
+
+  useEffect(() => {
+    if (!isPlayingClip) return
+    const interval = setInterval(() => {
+      if (playerRef.current && typeof playerRef.current.getCurrentTime === 'function') {
+        try {
+          const curr = playerRef.current.getCurrentTime()
+          if (curr >= clipEndSec || curr < clipStartSec) {
+            playerRef.current.pauseVideo()
+            setIsPlayingClip(false)
+          }
+        } catch {}
+      }
+    }, 200)
+    return () => clearInterval(interval)
+  }, [isPlayingClip, clipStartSec, clipEndSec])
+
+  useEffect(() => {
+    if (!clipEnabled || !metadata) {
+      if (playerRef.current) {
+        try {
+          playerRef.current.destroy()
+        } catch {}
+        playerRef.current = null
+      }
+      setIsPlayingClip(false)
+      return
+    }
+
+    const videoId = extractVideoId(metadata.url)
+    if (!videoId) return
+
+    let isMounted = true
+
+    const initYT = () => {
+      if (!isMounted || !(window as any).YT || !(window as any).YT.Player) return
+      try {
+        playerRef.current = new (window as any).YT.Player('youtube-clip-iframe', {
+          events: {
+            onStateChange: (e: any) => {
+              if (e.data === 0 || e.data === 2) {
+                setIsPlayingClip(false)
+              }
+            },
+          },
+        })
+      } catch {}
+    }
+
+    if ((window as any).YT && (window as any).YT.Player) {
+      initYT()
+    } else {
+      const existingScript = document.getElementById('youtube-iframe-api')
+      if (!existingScript) {
+        const script = document.createElement('script')
+        script.id = 'youtube-iframe-api'
+        script.src = 'https://www.youtube.com/iframe_api'
+        document.body.appendChild(script)
+      }
+      const prevHandler = (window as any).onYouTubeIframeAPIReady
+      ;(window as any).onYouTubeIframeAPIReady = () => {
+        if (prevHandler) prevHandler()
+        initYT()
+      }
+    }
+
+    return () => {
+      isMounted = false
+      if (playerRef.current) {
+        try {
+          playerRef.current.destroy()
+        } catch {}
+        playerRef.current = null
+      }
+    }
+  }, [clipEnabled, metadata?.url])
+
   const handleDownload = async () => {
     if (!metadata) return
+    if (clipEnabled) {
+      const err = validateClip(clipStartSec, clipEndSec, metadata.duration_s || 0)
+      if (err) {
+        setClipError(err)
+        return
+      }
+    }
     setIsSubmitting(true)
     const chosenFormat = audioOnly ? audioFormat : videoFormat
     const chosenQuality = audioOnly ? audioBitrate : videoQuality
     try {
-      const payload = {
+      const payload: Record<string, any> = {
         url: metadata.url,
         title: metadata.title,
         uploader: metadata.uploader,
@@ -254,6 +450,10 @@ export default function App() {
         format: chosenFormat,
         quality: chosenQuality,
         audio_only: audioOnly,
+      }
+      if (clipEnabled) {
+        payload.start_time_s = clipStartSec
+        payload.end_time_s = clipEndSec
       }
       const res = await fetch('/api/jobs', {
         method: 'POST',
@@ -266,6 +466,7 @@ export default function App() {
       }
       const job: DownloadJob = await res.json()
       setJobs((prev) => [job, ...prev.filter((j) => j.id !== job.id)])
+      setClipEnabled(false)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to start download'
       setExtractError(message)
@@ -545,6 +746,8 @@ export default function App() {
         default_quality: settingsVideoQuality,
         default_audio_format: settingsAudioFormat,
         default_audio_quality: settingsAudioBitrate,
+        cookies_from_browser: cookiesFromBrowser || null,
+        cookies_file: cookiesFile || null,
       }
 
       const res = await fetch('/api/settings', {
@@ -572,6 +775,8 @@ export default function App() {
       setSettingsVideoQuality(data.default_quality)
       setSettingsAudioFormat(data.default_audio_format)
       setSettingsAudioBitrate(data.default_audio_quality)
+      setCookiesFromBrowser(data.cookies_from_browser ?? '')
+      setCookiesFile(data.cookies_file ?? '')
 
       setVideoFormat(data.default_format)
       setVideoQuality(data.default_quality)
@@ -874,6 +1079,171 @@ export default function App() {
                               <option value="192k">192 kbps</option>
                               <option value="128k">128 kbps</option>
                             </select>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Clip Segment Section */}
+                    <div className="pt-2 border-t border-slate-700/60 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Scissors className="w-4 h-4 text-rose-400" />
+                          <span className="text-xs font-medium text-slate-300">Clip Segment</span>
+                          {ffmpegInstalled === false && (
+                            <span className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded">
+                              Requires FFmpeg
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          aria-label="Clip Segment"
+                          disabled={ffmpegInstalled === false}
+                          onClick={() => setClipEnabled(!clipEnabled)}
+                          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed ${
+                            clipEnabled ? 'bg-rose-600' : 'bg-slate-700'
+                          }`}
+                          role="switch"
+                          aria-checked={clipEnabled}
+                          title={ffmpegInstalled === false ? 'FFmpeg is required to clip videos' : 'Toggle Clip Segment'}
+                        >
+                          <span
+                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                              clipEnabled ? 'translate-x-4' : 'translate-x-0'
+                            }`}
+                          />
+                        </button>
+                      </div>
+
+                      {clipEnabled && (
+                        <div className="bg-slate-900/70 border border-slate-700/60 rounded-lg p-3 space-y-3 animate-in fade-in duration-150">
+                          {/* Embedded YouTube preview player */}
+                          {extractVideoId(metadata.url) && (
+                            <div className="relative aspect-video rounded-md overflow-hidden bg-black border border-slate-800">
+                              <iframe
+                                id="youtube-clip-iframe"
+                                src={`https://www.youtube.com/embed/${extractVideoId(metadata.url)}?enablejsapi=1`}
+                                title="YouTube Video Preview"
+                                className="w-full h-full"
+                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                allowFullScreen
+                              />
+                            </div>
+                          )}
+
+                          {/* Timestamp input controls */}
+                          <div className="grid grid-cols-2 gap-3">
+                            {/* Start timestamp */}
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between">
+                                <label htmlFor="clip-start-input" className="text-xs font-medium text-slate-300">
+                                  Start Time
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={handleSetCurrentAsStart}
+                                  className="text-[10px] text-rose-400 hover:text-rose-300 flex items-center gap-0.5 transition"
+                                  title="Set start to current player position"
+                                >
+                                  <Clock className="w-3 h-3" />
+                                  Use Current
+                                </button>
+                              </div>
+                              <input
+                                id="clip-start-input"
+                                type="text"
+                                value={clipStartStr}
+                                onChange={(e) => handleClipStartChange(e.target.value)}
+                                placeholder="00:00"
+                                className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-slate-100 focus:outline-none focus:ring-1 focus:ring-rose-500"
+                              />
+                            </div>
+
+                            {/* End timestamp */}
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between">
+                                <label htmlFor="clip-end-input" className="text-xs font-medium text-slate-300">
+                                  End Time
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={handleSetCurrentAsEnd}
+                                  className="text-[10px] text-rose-400 hover:text-rose-300 flex items-center gap-0.5 transition"
+                                  title="Set end to current player position"
+                                >
+                                  <Clock className="w-3 h-3" />
+                                  Use Current
+                                </button>
+                              </div>
+                              <input
+                                id="clip-end-input"
+                                type="text"
+                                value={clipEndStr}
+                                onChange={(e) => handleClipEndChange(e.target.value)}
+                                placeholder="00:00"
+                                className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-slate-100 focus:outline-none focus:ring-1 focus:ring-rose-500"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Range Sliders */}
+                          <div className="space-y-2 pt-1">
+                            <div className="flex justify-between items-center text-[11px] text-slate-400 font-mono">
+                              <span>Range: {formatTimestamp(clipStartSec)} - {formatTimestamp(clipEndSec)}</span>
+                              <span>Duration: {formatTimestamp(Math.max(0, clipEndSec - clipStartSec))}</span>
+                            </div>
+                            <div className="space-y-1.5">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] text-slate-500 w-8">Start</span>
+                                <input
+                                  type="range"
+                                  min={0}
+                                  max={Math.max(1, (metadata.duration_s || 60) - 1)}
+                                  value={clipStartSec}
+                                  onChange={(e) => handleStartSliderChange(Number(e.target.value))}
+                                  className="w-full accent-rose-500 h-1 bg-slate-800 rounded cursor-pointer"
+                                />
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] text-slate-500 w-8">End</span>
+                                <input
+                                  type="range"
+                                  min={1}
+                                  max={metadata.duration_s || 60}
+                                  value={clipEndSec}
+                                  onChange={(e) => handleEndSliderChange(Number(e.target.value))}
+                                  className="w-full accent-rose-500 h-1 bg-slate-800 rounded cursor-pointer"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Preview Clip Button */}
+                          <div className="flex items-center justify-between pt-1">
+                            <button
+                              type="button"
+                              onClick={handlePreviewClip}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-750 border border-slate-700 rounded text-xs font-medium text-slate-200 transition"
+                            >
+                              {isPlayingClip ? (
+                                <>
+                                  <Pause className="w-3.5 h-3.5 text-rose-400" />
+                                  Pause Clip
+                                </>
+                              ) : (
+                                <>
+                                  <Play className="w-3.5 h-3.5 text-rose-400" />
+                                  Preview Clip
+                                </>
+                              )}
+                            </button>
+                            {clipError && (
+                              <p className="text-xs text-rose-400 flex items-center gap-1">
+                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                {clipError}
+                              </p>
+                            )}
                           </div>
                         </div>
                       )}
@@ -1541,6 +1911,59 @@ export default function App() {
                     <option value="128k">128 kbps</option>
                   </select>
                 </div>
+              </div>
+            </div>
+
+            {/* Cookie Authentication */}
+            <div className="p-4 bg-slate-800/50 border border-slate-700/50 rounded-xl space-y-3">
+              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Cookie Authentication</h3>
+              <div>
+                <label htmlFor="settings-cookies-browser" className="block text-xs font-medium text-slate-300 mb-1">
+                  Browser for Cookies
+                </label>
+                <select
+                  id="settings-cookies-browser"
+                  value={cookiesFromBrowser}
+                  onChange={(e) => {
+                    setCookiesFromBrowser(e.target.value)
+                    setSettingsSuccessMsg('')
+                    setSettingsErrorMsg('')
+                  }}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+                >
+                  <option value="">Disabled</option>
+                  <option value="chrome">Chrome</option>
+                  <option value="chromium">Chromium</option>
+                  <option value="firefox">Firefox</option>
+                  <option value="edge">Edge</option>
+                  <option value="safari">Safari</option>
+                  <option value="opera">Opera</option>
+                  <option value="brave">Brave</option>
+                  <option value="vivaldi">Vivaldi</option>
+                </select>
+                <p className="mt-1.5 text-xs text-slate-500">
+                  Required for age-restricted videos. Browser must be logged in to YouTube. Note: Chrome locks its cookie database while open — use Firefox or a cookies.txt file instead.
+                </p>
+              </div>
+              <div>
+                <label htmlFor="settings-cookies-file" className="block text-xs font-medium text-slate-300 mb-1">
+                  Cookies File Path <span className="text-slate-500 font-normal">(overrides browser above)</span>
+                </label>
+                <input
+                  id="settings-cookies-file"
+                  type="text"
+                  value={cookiesFile}
+                  onChange={(e) => {
+                    setCookiesFile(e.target.value)
+                    setSettingsSuccessMsg('')
+                    setSettingsErrorMsg('')
+                  }}
+                  placeholder="e.g. C:\Users\you\cookies.txt"
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+                />
+                <p className="mt-1.5 text-xs text-slate-500">
+                  Export from Chrome/Firefox using the <span className="text-slate-400">Get cookies.txt LOCALLY</span> extension, then paste the file path here.
+                </p>
               </div>
             </div>
 

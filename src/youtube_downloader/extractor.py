@@ -29,7 +29,7 @@ def check_ffmpeg() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
-def extract_video_info(url: str) -> dict[str, Any]:
+def extract_video_info(url: str, cookies_from_browser: str | None = None, cookies_file: str | None = None) -> dict[str, Any]:
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
@@ -37,6 +37,10 @@ def extract_video_info(url: str) -> dict[str, Any]:
         "skip_download": True,
         "noplaylist": True,
     }
+    if cookies_file:
+        ydl_opts["cookiefile"] = cookies_file
+    elif cookies_from_browser:
+        ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         if not info:
@@ -61,13 +65,17 @@ def extract_video_info(url: str) -> dict[str, Any]:
 
 
 # ponytail: extract_flat=True fetches manifest without per-item downloads; upgrade to paginated batches if playlist length > 1000
-def extract_playlist_info(url: str) -> dict[str, Any]:
+def extract_playlist_info(url: str, cookies_from_browser: str | None = None, cookies_file: str | None = None) -> dict[str, Any]:
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
         "extract_flat": True,
         "skip_download": True,
     }
+    if cookies_file:
+        ydl_opts["cookiefile"] = cookies_file
+    elif cookies_from_browser:
+        ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         if not info:

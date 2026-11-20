@@ -24,9 +24,15 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     # ponytail: lightweight column migration for sqlite; upgrade to alembic when schema changes proliferate
     with engine.connect() as conn:
-        for col, default_val in [("default_audio_format", "'mp3'"), ("default_audio_quality", "'best'")]:
+        for col, default_val in [("default_audio_format", "'mp3'"), ("default_audio_quality", "'best'"), ("cookies_from_browser", "NULL"), ("cookies_file", "NULL")]:
             try:
                 conn.execute(text(f"ALTER TABLE settings ADD COLUMN {col} VARCHAR DEFAULT {default_val}"))
+                conn.commit()
+            except Exception:
+                pass
+        for col in ["start_time_s", "end_time_s"]:
+            try:
+                conn.execute(text(f"ALTER TABLE download_jobs ADD COLUMN {col} INTEGER"))
                 conn.commit()
             except Exception:
                 pass
